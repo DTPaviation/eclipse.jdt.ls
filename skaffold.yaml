@@ -1,0 +1,14 @@
+apiVersion: skaffold/v2beta5
+kind: Config
+build:
+  tagPolicy:
+    envTemplate:
+      template: "latest"  
+  artifacts:
+  - image: tnexus/jdtls-context
+  local: {}
+  
+deploy:
+  kubectl:
+    manifests:
+    - k8s/*.yml

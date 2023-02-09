@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: jdtls-context
+  name: jdtls-context
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jdtls-context
+  template:
+    metadata:
+      labels:
+        app: jdtls-context
+    spec:
+      containers:
+      - image: tnexus/jdtls-context
+        name: jdtls-context
+        volumeMounts:
+        - name: jdtls-volume
+          mountPath: /etc/jdtls/data
+        ports:
+        - containerPort: 5036
+          protocol: TCP
+    
+      volumes:
+        - name: jdtls-volume
+          nfs:
+            server: kubernetesMaster
+            path: /nfsdata/tnexus-mongodb/contexts/jdtls
