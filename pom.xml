@@ -68,7 +68,7 @@
 							<?m2e execute onConfiguration?>
 							<id>get-libs</id>
 							<goals>
-								<goal>copy</goal>
+								<goal>copy-dependencies</goal>
 							</goals>
 							<phase>validate</phase>
 						</execution>

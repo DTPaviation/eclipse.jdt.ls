@@ -72,6 +72,7 @@ import org.eclipse.jdt.ls.core.internal.preferences.PreferenceManager;
 import org.eclipse.jdt.ls.core.internal.preferences.StandardPreferenceManager;
 import org.eclipse.jdt.ls.core.internal.syntaxserver.SyntaxLanguageServer;
 import org.eclipse.jdt.ls.core.internal.syntaxserver.SyntaxProjectsManager;
+import org.eclipse.jdt.ls.core.websocket.WebSocketServer;
 import org.eclipse.lsp4j.jsonrpc.Launcher;
 import org.eclipse.lsp4j.jsonrpc.MessageConsumer;
 import org.eclipse.text.templates.ContextTypeRegistry;
@@ -342,7 +343,7 @@ public class JavaLanguageServerPlugin extends Plugin {
 		return null;
 	}
 
-	private void startConnection() throws IOException {
+	private void startConnectionSocket() throws IOException {
 		Launcher<JavaLanguageClient> launcher;
 		ExecutorService executorService = getExecutorService();
 		if (JDTEnvironmentUtils.isSyntaxServer()) {
@@ -378,6 +379,35 @@ public class JavaLanguageServerPlugin extends Plugin {
 		}
 		protocol.connectClient(launcher.getRemoteProxy());
 		launcher.startListening();
+	}
+
+	private void startConnection() throws IOException {
+
+		ExecutorService executorService = Executors.newCachedThreadPool();
+
+		String host = JDTEnvironmentUtils.getClientHost();
+		Integer port = JDTEnvironmentUtils.getClientPort();
+
+		try {
+
+			//	AsynchronousSocketChannel socketChannel = serverSocket.accept().get();
+			Runnable runListener = new Runnable() {
+
+				@Override
+				public void run() {
+
+					WebSocketServer server = new WebSocketServer(host, port, "/language.server", "/myHandler/websocket", contentProviderManager, projectsManager, preferenceManager);
+
+					server.createAndStartServer();
+
+				}
+			};
+			executorService.submit(runListener);
+
+		} catch (Exception e) {
+			throw new RuntimeException("Error when opening a socket channel at " + host + ":" + port + ".", e);
+		}
+
 	}
 
 	/*
