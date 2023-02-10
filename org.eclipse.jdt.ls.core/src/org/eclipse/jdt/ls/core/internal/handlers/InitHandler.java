@@ -238,9 +238,11 @@ final public class InitHandler extends BaseInitHandler {
 					start = System.currentTimeMillis();
 					JobHelpers.waitForRepositoryRegistryUpdateJob();
 					JavaLanguageServerPlugin.logInfo("RepositoryRegistryUpdateJob finished " + (System.currentTimeMillis() - start) + "ms");
+					ProjectsManager.setAutoBuilding(false);
 					resetBuildState = ProjectsManager.interruptAutoBuild();
 					projectsManager.initializeProjects(roots, subMonitor);
 					projectsManager.configureFilters(monitor);
+					ProjectsManager.setAutoBuilding(preferenceManager.getPreferences().isAutobuildEnabled());
 					JavaLanguageServerPlugin.logInfo("Workspace initialized in " + (System.currentTimeMillis() - start) + "ms");
 					connection.sendStatus(ServiceStatus.Started, "Ready");
 				} catch (OperationCanceledException e) {
