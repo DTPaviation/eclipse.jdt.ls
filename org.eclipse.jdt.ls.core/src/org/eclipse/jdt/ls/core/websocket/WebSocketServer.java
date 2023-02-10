@@ -106,7 +106,8 @@ public class WebSocketServer {
 				// and configure  your websocket container.
 
 				// Configure defaults for container
-				wsContainer.setDefaultMaxTextMessageBufferSize(65535);
+				wsContainer.setDefaultMaxTextMessageBufferSize(1024 * 1024);
+				wsContainer.setDefaultMaxBinaryMessageBufferSize(1024 * 1024);
 
 				// Add WebSocket endpoint to javax.websocket layer
 				wsContainer.addEndpoint(SocketHandler.class);
