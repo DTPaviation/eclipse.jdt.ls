@@ -19,7 +19,7 @@ spec:
         name: jdtls-context
         volumeMounts:
         - name: jdtls-volume
-          mountPath: /etc/jdtls/data
+          mountPath: /etc/jdtls/project
         ports:
         - containerPort: 5036
           protocol: TCP
