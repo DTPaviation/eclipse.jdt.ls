@@ -28,4 +28,5 @@ spec:
         - name: jdtls-volume
           nfs:
             server: kubernetesMaster
-            path: /nfsdata/tnexus-mongodb/contexts/jdtls
+            path: /nfsdata/tnexus-mongodb/contexts/msgHubClasses
+
