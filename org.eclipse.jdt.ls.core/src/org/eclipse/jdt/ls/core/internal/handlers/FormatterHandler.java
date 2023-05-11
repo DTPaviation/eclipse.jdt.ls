@@ -70,11 +70,11 @@ public class FormatterHandler {
 		this.preferenceManager = preferenceManager;
 	}
 
-	List<? extends org.eclipse.lsp4j.TextEdit> formatting(DocumentFormattingParams params, IProgressMonitor monitor) {
+	public List<? extends org.eclipse.lsp4j.TextEdit> formatting(DocumentFormattingParams params, IProgressMonitor monitor) {
 		return format(params.getTextDocument().getUri(), params.getOptions(), (Range) null, monitor);
 	}
 
-	List<? extends org.eclipse.lsp4j.TextEdit> rangeFormatting(DocumentRangeFormattingParams params, IProgressMonitor monitor) {
+	public List<? extends org.eclipse.lsp4j.TextEdit> rangeFormatting(DocumentRangeFormattingParams params, IProgressMonitor monitor) {
 		return format(params.getTextDocument().getUri(), params.getOptions(), params.getRange(), monitor);
 	}
 
@@ -282,6 +282,9 @@ public class FormatterHandler {
 			if (triggerChar == CLOSING_BRACE) {
 				//Format whole block, from beginning of line to end of last line
 				CompilationUnit astRoot = CoreASTProvider.getInstance().getAST(cu, CoreASTProvider.WAIT_YES, null);
+				if (astRoot == null) {
+					return null;
+				}
 				NodeFinder finder = new NodeFinder(astRoot, offset, length);
 				ASTNode block = finder.getCoveredNode();
 				if (block == null) {

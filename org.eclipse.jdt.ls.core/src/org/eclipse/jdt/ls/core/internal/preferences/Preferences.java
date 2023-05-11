@@ -325,6 +325,11 @@ public class Preferences {
 	public static final String COMPLETION_MATCH_CASE_MODE_KEY = "java.completion.matchCase";
 
 	/**
+	 * Preference key to specify whether text edit of completion item can be lazily resolved.
+	 */
+	public static final String COMPLETION_LAZY_RESOLVE_TEXT_EDIT_ENABLED_KEY = "java.completion.lazyResolveTextEdit.enabled";
+
+	/**
 	 * Preference key to enable/disable the 'foldingRange'.
 	 */
 	public static final String FOLDINGRANGE_ENABLED_KEY = "java.foldingRange.enabled";
@@ -458,6 +463,8 @@ public class Preferences {
 	// Project encoding settings
 	public static final String JAVA_PROJECT_ENCODING = "java.project.encoding";
 
+	public static final String JAVA_TELEMETRY_ENABLED_KEY = "java.telemetry.enabled";
+
 	/**
 	 * The preferences for generating toString method.
 	 */
@@ -514,6 +521,7 @@ public class Preferences {
 	public static final String WORKSPACE_CHANGE_FOLDERS = "workspace/didChangeWorkspaceFolders";
 	public static final String IMPLEMENTATION = "textDocument/implementation";
 	public static final String SELECTION_RANGE = "textDocument/selectionRange";
+	public static final String INLAY_HINT = "textDocument/inlayHint";
 
 	public static final String FORMATTING_ID = UUID.randomUUID().toString();
 	public static final String FORMATTING_ON_TYPE_ID = UUID.randomUUID().toString();
@@ -536,6 +544,7 @@ public class Preferences {
 	public static final String WORKSPACE_WATCHED_FILES_ID = UUID.randomUUID().toString();
 	public static final String IMPLEMENTATION_ID = UUID.randomUUID().toString();
 	public static final String SELECTION_RANGE_ID = UUID.randomUUID().toString();
+	public static final String INLAY_HINT_ID = UUID.randomUUID().toString();
 	private static final String GRADLE_OFFLINE_MODE = "gradle.offline.mode";
 	private static final int DEFAULT_TAB_SIZE = 4;
 
@@ -576,10 +585,12 @@ public class Preferences {
 	private boolean completionEnabled;
 	private boolean postfixCompletionEnabled;
 	private CompletionMatchCaseMode completionMatchCaseMode;
+	private boolean completionLazyResolveTextEditEnabled;
 	private boolean completionOverwrite;
 	private boolean foldingRangeEnabled;
 	private boolean selectionRangeEnabled;
 	private boolean guessMethodArguments;
+
 	private boolean javaFormatComments;
 	private boolean hashCodeEqualsTemplateUseJava7Objects;
 	private boolean hashCodeEqualsTemplateUseInstanceof;
@@ -639,6 +650,7 @@ public class Preferences {
 	private FeatureStatus nullAnalysisMode;
 	private List<String> cleanUpActionsOnSave;
 	private boolean extractInterfaceReplaceEnabled;
+	private boolean telemetryEnabled;
 
 	static {
 		JAVA_IMPORT_EXCLUSIONS_DEFAULT = new LinkedList<>();
@@ -824,6 +836,7 @@ public class Preferences {
 		completionEnabled = true;
 		postfixCompletionEnabled = true;
 		completionMatchCaseMode = CompletionMatchCaseMode.OFF;
+		completionLazyResolveTextEditEnabled = false;
 		completionOverwrite = true;
 		foldingRangeEnabled = true;
 		selectionRangeEnabled = true;
@@ -867,6 +880,7 @@ public class Preferences {
 		nullAnalysisMode = FeatureStatus.disabled;
 		cleanUpActionsOnSave = new ArrayList<>();
 		extractInterfaceReplaceEnabled = false;
+		telemetryEnabled = false;
 	}
 
 	private static void initializeNullAnalysisClasspathStorage() {
@@ -1000,6 +1014,9 @@ public class Preferences {
 
 		String completionMatchCaseMode = getString(configuration, COMPLETION_MATCH_CASE_MODE_KEY, null);
 		prefs.setCompletionMatchCaseMode(CompletionMatchCaseMode.fromString(completionMatchCaseMode, CompletionMatchCaseMode.OFF));
+
+		boolean completionLazyResolveTextEditEnabled = getBoolean(configuration, COMPLETION_LAZY_RESOLVE_TEXT_EDIT_ENABLED_KEY, false);
+		prefs.setCompletionLazyResolveTextEditEnabled(completionLazyResolveTextEditEnabled);
 
 		boolean completionOverwrite = getBoolean(configuration, JAVA_COMPLETION_OVERWRITE_KEY, true);
 		prefs.setCompletionOverwrite(completionOverwrite);
@@ -1221,6 +1238,8 @@ public class Preferences {
 		prefs.setCleanUpActionsOnSave(cleanupActionsOnSave);
 		boolean extractInterfaceReplaceEnabled = getBoolean(configuration, JAVA_REFACTORING_EXTRACT_INTERFACE_REPLACE, false);
 		prefs.setExtractInterfaceReplaceEnabled(extractInterfaceReplaceEnabled);
+		boolean telemetryEnabled = getBoolean(configuration, JAVA_TELEMETRY_ENABLED_KEY, false);
+		prefs.setTelemetryEnabled(telemetryEnabled);
 		return prefs;
 	}
 
@@ -1424,6 +1443,14 @@ public class Preferences {
 		this.completionMatchCaseMode = completionMatchCaseMode;
 	}
 
+	public boolean isCompletionLazyResolveTextEditEnabled() {
+		return completionLazyResolveTextEditEnabled;
+	}
+
+	public void setCompletionLazyResolveTextEditEnabled(boolean completionLazyResolveTextEditEnabled) {
+		this.completionLazyResolveTextEditEnabled = completionLazyResolveTextEditEnabled;
+	}
+
 	public Preferences setCompletionOverwrite(boolean completionOverwrite) {
 		this.completionOverwrite = completionOverwrite;
 		return this;
@@ -1527,6 +1554,10 @@ public class Preferences {
 		pref.put(TypeFilter.TYPEFILTER_ENABLED, String.join(";", filteredTypes));
 		JavaLanguageServerPlugin.getInstance().getTypeFilter().dispose();
 		return this;
+	}
+
+	public void setTelemetryEnabled(boolean telemetry) {
+		this.telemetryEnabled = telemetry;
 	}
 
 	public Preferences setMaxBuildCount(int maxConcurrentBuilds) {
@@ -2277,22 +2308,16 @@ public class Preferences {
 								}
 							}
 						}
+						String aType = findTypeInProject(javaProject, annotationType, classpathStorage);
+						if (aType != null) {
+							return aType;
+						}
 					} else {
 						// for unknown types, try to find type in the project
 						try {
-							IType type = javaProject.findType(annotationType);
-							if (type != null) {
-								IJavaElement fragmentRoot = type.getAncestor(IJavaElement.PACKAGE_FRAGMENT_ROOT);
-								IClasspathEntry classpathEntry = javaProject.getClasspathEntryFor(fragmentRoot.getPath());
-								if (classpathEntry == null || !classpathEntry.isTest()) {
-									String classpath = fragmentRoot.getPath().toOSString();
-									if (classpathStorage.containsKey(annotationType)) {
-										classpathStorage.get(annotationType).add(classpath);
-									} else {
-										classpathStorage.put(annotationType, new ArrayList<>(Arrays.asList(classpath)));
-									}
-									return annotationType;
-								}
+							String aType = findTypeInProject(javaProject, annotationType, classpathStorage);
+							if (aType != null) {
+								return aType;
 							}
 						} catch (JavaModelException e) {
 							continue;
@@ -2301,6 +2326,24 @@ public class Preferences {
 				}
 			} catch (CoreException | URISyntaxException e) {
 				JavaLanguageServerPlugin.logException(e);
+			}
+		}
+		return null;
+	}
+
+	private String findTypeInProject(IJavaProject javaProject, String annotationType, Map<String, List<String>> classpathStorage) throws JavaModelException {
+		IType type = javaProject.findType(annotationType);
+		if (type != null) {
+			IJavaElement fragmentRoot = type.getAncestor(IJavaElement.PACKAGE_FRAGMENT_ROOT);
+			IClasspathEntry classpathEntry = javaProject.getClasspathEntryFor(fragmentRoot.getPath());
+			if (classpathEntry == null || !classpathEntry.isTest()) {
+				String classpath = fragmentRoot.getPath().toOSString();
+				if (classpathStorage.containsKey(annotationType)) {
+					classpathStorage.get(annotationType).add(classpath);
+				} else {
+					classpathStorage.put(annotationType, new ArrayList<>(Arrays.asList(classpath)));
+				}
+				return annotationType;
 			}
 		}
 		return null;
@@ -2334,6 +2377,10 @@ public class Preferences {
 			options.put(JavaCore.COMPILER_PB_NULL_ANNOTATION_INFERENCE_CONFLICT, "warning");
 		}
 		return options;
+	}
+
+	public boolean isTelemetryEnabled() {
+		return telemetryEnabled;
 	}
 
 }

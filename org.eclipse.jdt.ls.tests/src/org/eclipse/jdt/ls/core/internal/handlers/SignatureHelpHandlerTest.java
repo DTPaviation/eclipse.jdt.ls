@@ -181,6 +181,20 @@ public class SignatureHelpHandlerTest extends AbstractCompilationUnitBasedTest {
 		assertEquals(0, help.getSignatures().size());
 	}
 
+	@Test
+	public void testSignatureHelp_endOfDoc() throws JavaModelException {
+		IPackageFragment pack1 = sourceFolder.createPackageFragment("test1", false, null);
+		StringBuilder buf = new StringBuilder();
+		buf.append("package test1;\n");
+		buf.append("public class E {\n");
+		buf.append("   public int bar(String s) {  }\n");
+		buf.append("}\n");
+		ICompilationUnit cu = pack1.createCompilationUnit("E.java", buf.toString(), false, null);
+		SignatureHelp help = getSignatureHelp(cu, 3, 2);
+		assertNotNull(help);
+		assertEquals(0, help.getSignatures().size());
+	}
+
 	// See https://github.com/eclipse/eclipse.jdt.ls/pull/1015#issuecomment-487997215
 	@Test
 	public void testSignatureHelp_parameters() throws JavaModelException {
@@ -965,6 +979,30 @@ public class SignatureHelpHandlerTest extends AbstractCompilationUnitBasedTest {
 		buf.append("}\n");
 		ICompilationUnit cu = pack1.createCompilationUnit("E.java", buf.toString(), false, null);
 		SignatureHelp help = getSignatureHelp(cu, 3, 14);
+		assertEquals(0, help.getSignatures().size());
+	}
+
+	@Test
+	public void testSignatureHelp_invalidAST() throws JavaModelException {
+		IPackageFragment pack1 = sourceFolder.createPackageFragment("test1", false, null);
+		String content = """
+				package test1;
+				class X {
+					public static void main(string[] args) {
+
+					}
+
+					static void fun() {
+						int a
+						for (l < 10) {
+
+						}
+					}
+				}
+				""";
+
+		ICompilationUnit cu = pack1.createCompilationUnit("X.java", content, false, null);
+		SignatureHelp help = getSignatureHelp(cu, 2, 37);
 		assertEquals(0, help.getSignatures().size());
 	}
 

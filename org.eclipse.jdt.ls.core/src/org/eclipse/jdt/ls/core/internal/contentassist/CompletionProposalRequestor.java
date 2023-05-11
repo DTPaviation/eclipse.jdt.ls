@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2016-2022 Red Hat Inc. and others.
+ * Copyright (c) 2016-2023 Red Hat Inc. and others.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License 2.0
  * which accompanies this distribution, and is available at
@@ -13,8 +13,10 @@
 package org.eclipse.jdt.ls.core.internal.contentassist;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -49,9 +51,12 @@ import org.eclipse.jdt.ls.core.internal.handlers.CompletionResponse;
 import org.eclipse.jdt.ls.core.internal.handlers.CompletionResponses;
 import org.eclipse.jdt.ls.core.internal.preferences.PreferenceManager;
 import org.eclipse.lsp4j.CompletionItem;
+import org.eclipse.lsp4j.CompletionItemDefaults;
 import org.eclipse.lsp4j.CompletionItemKind;
 import org.eclipse.lsp4j.CompletionItemTag;
+import org.eclipse.lsp4j.InsertReplaceRange;
 import org.eclipse.lsp4j.Range;
+import org.eclipse.lsp4j.jsonrpc.messages.Either;
 
 import com.google.common.collect.ImmutableSet;
 
@@ -67,6 +72,7 @@ public final class CompletionProposalRequestor extends CompletionRequestor {
 	private boolean isComplete = true;
 	private PreferenceManager preferenceManager;
 	private CompletionProposalReplacementProvider proposalProvider;
+	private CompletionItemDefaults itemDefaults;
 
 	static class ProposalComparator implements Comparator<CompletionProposal> {
 
@@ -114,6 +120,12 @@ public final class CompletionProposalRequestor extends CompletionRequestor {
 		return isComplete;
 	}
 
+	public CompletionItemDefaults getCompletionItemDefaults() {
+		if (itemDefaults == null) {
+			itemDefaults = new CompletionItemDefaults();
+		}
+		return itemDefaults;
+	}
 	// Update SUPPORTED_KINDS when mapKind changes
 	// @formatter:off
 	public static final Set<CompletionItemKind> SUPPORTED_KINDS = ImmutableSet.of(CompletionItemKind.Constructor,
@@ -149,6 +161,14 @@ public final class CompletionProposalRequestor extends CompletionRequestor {
 		response.setOffset(offset);
 		fIsTestCodeExcluded = !isTestSource(unit.getJavaProject(), unit);
 		setRequireExtendedContext(true);
+		try {
+			List<String> importedElements = Arrays.stream(this.unit.getImports())
+					.map(t -> t.getElementName())
+					.toList();
+			TypeFilter.getDefault().removeFilterIfMatched(importedElements);
+		} catch (JavaModelException e) {
+			JavaLanguageServerPlugin.logException("Failed to get imports during completion", e);
+		}
 	}
 
 	private boolean isTestSource(IJavaProject project, ICompilationUnit cu) {
@@ -222,6 +242,11 @@ public final class CompletionProposalRequestor extends CompletionRequestor {
 		int limit = Math.min(proposals.size(), maxCompletions);
 		List<CompletionItem> completionItems = new ArrayList<>(limit);
 
+		if (!proposals.isEmpty()){
+			initializeCompletionListItemDefaults(proposals.get(0));
+		}
+
+		List<Map<String, String>> contributedData = new LinkedList<>();
 		//Let's compute replacement texts for the most relevant results only
 		for (int i = 0; i < limit; i++) {
 			CompletionProposal proposal = proposals.get(i);
@@ -238,11 +263,8 @@ public final class CompletionProposalRequestor extends CompletionRequestor {
 							item.setFilterText(item.getInsertText());
 						}
 					}
-					Map<String, String> itemData = (Map<String, String>) item.getData();
 					Map<String, String> rankingData = rankingResult.getData();
-					for (String key : rankingData.keySet()) {
-						itemData.put(key, rankingData.get(key));
-					}
+					contributedData.add(rankingData);
 				}
 				completionItems.add(item);
 			} catch (Exception e) {
@@ -258,6 +280,8 @@ public final class CompletionProposalRequestor extends CompletionRequestor {
 			response.setProposals(proposals);
 		}
 		response.setItems(completionItems);
+		response.setCommonData(CompletionResolveHandler.DATA_FIELD_URI, uri);
+		response.setCompletionItemData(contributedData);
 		CompletionResponses.store(response);
 
 		return completionItems;
@@ -290,8 +314,22 @@ public final class CompletionProposalRequestor extends CompletionRequestor {
 		return resultCombination;
 	}
 
+	private void initializeCompletionListItemDefaults(CompletionProposal proposal) {
+		CompletionItem completionItem = new CompletionItem();
+		CompletionItemDefaults itemDefaults = getCompletionItemDefaults();
+		proposalProvider.updateReplacement(proposal, completionItem, '\0');
+		if (completionItem.getInsertTextFormat() != null && preferenceManager.getClientPreferences().isCompletionListItemDefaultsInsertTextFormatSupport()) {
+			itemDefaults.setInsertTextFormat(completionItem.getInsertTextFormat());
+		}
+		if (completionItem.getTextEdit() != null && preferenceManager.getClientPreferences().isCompletionListItemDefaultsEditRangeSupport()) {
+			itemDefaults.setEditRange(getEditRange(completionItem, preferenceManager));
+		}
+	}
+
+
 	public CompletionItem toCompletionItem(CompletionProposal proposal, int index) {
 		final CompletionItem $ = new CompletionItem();
+		CompletionItemDefaults itemDefaults = getCompletionItemDefaults();
 		$.setKind(mapKind(proposal));
 		if (Flags.isDeprecated(proposal.getFlags())) {
 			if (preferenceManager.getClientPreferences().isCompletionItemTagSupported()) {
@@ -303,7 +341,6 @@ public final class CompletionProposalRequestor extends CompletionRequestor {
 		}
 		Map<String, String> data = new HashMap<>();
 		// append data field so that resolve request can use it.
-		data.put(CompletionResolveHandler.DATA_FIELD_URI, uri);
 		data.put(CompletionResolveHandler.DATA_FIELD_REQUEST_ID, String.valueOf(response.getId()));
 		data.put(CompletionResolveHandler.DATA_FIELD_PROPOSAL_ID, String.valueOf(index));
 		$.setData(data);
@@ -328,8 +365,25 @@ public final class CompletionProposalRequestor extends CompletionRequestor {
 			if (replace != null && replace.getEnd().getLine() != replace.getStart().getLine()) {
 				replace.setEnd(replace.getStart());
 			}
+			if (itemDefaults.getEditRange() != null && itemDefaults.getEditRange().equals(getEditRange($, preferenceManager))) {
+				$.setTextEditText(newText);
+				$.setTextEdit(null);
+			}
+		}
+		if (itemDefaults.getInsertTextFormat() != null && itemDefaults.getInsertTextFormat() == $.getInsertTextFormat()) {
+			$.setInsertTextFormat(null);
 		}
 		return $;
+	}
+
+	private static Either<Range, InsertReplaceRange> getEditRange(CompletionItem completionItem, PreferenceManager preferenceManager) {
+		if (preferenceManager.getClientPreferences().isCompletionInsertReplaceSupport()) {
+			return Either.forRight(new InsertReplaceRange(completionItem.getTextEdit().getRight().getInsert(), completionItem.getTextEdit().getRight().getReplace()));
+		} else {
+			Range range = completionItem.getTextEdit().isLeft() ? completionItem.getTextEdit().getLeft().getRange()
+					: (completionItem.getTextEdit().getRight().getInsert() != null ? completionItem.getTextEdit().getRight().getInsert() : completionItem.getTextEdit().getRight().getReplace());
+			return Either.forLeft(range);
+		}
 	}
 
 	@Override
@@ -338,9 +392,15 @@ public final class CompletionProposalRequestor extends CompletionRequestor {
 		this.context = context;
 		response.setContext(context);
 		this.descriptionProvider = new CompletionProposalDescriptionProvider(unit, context);
-		this.proposalProvider = new CompletionProposalReplacementProvider(unit, context, response.getOffset(), preferenceManager.getPreferences(), preferenceManager.getClientPreferences());
+		this.proposalProvider = new CompletionProposalReplacementProvider(
+			unit,
+			context,
+			response.getOffset(),
+			preferenceManager.getPreferences(),
+			preferenceManager.getClientPreferences(),
+			false
+		);
 	}
-
 
 	private CompletionItemKind mapKind(final CompletionProposal proposal) {
 		//When a new CompletionItemKind is added, don't forget to update SUPPORTED_KINDS
@@ -463,7 +523,6 @@ public final class CompletionProposalRequestor extends CompletionRequestor {
 			case CompletionProposal.CONSTRUCTOR_INVOCATION:
 			case CompletionProposal.ANONYMOUS_CLASS_CONSTRUCTOR_INVOCATION:
 			case CompletionProposal.JAVADOC_TYPE_REF:
-			case CompletionProposal.PACKAGE_REF:
 			case CompletionProposal.TYPE_REF:
 				return isTypeFiltered(proposal);
 			case CompletionProposal.METHOD_REF:
@@ -478,6 +537,10 @@ public final class CompletionProposalRequestor extends CompletionRequestor {
 	}
 
 	protected boolean isTypeFiltered(CompletionProposal proposal) {
+		// always includes type completions for import declarations.
+		if (CompletionProposalUtils.isImportCompletion(proposal)) {
+			return false;
+		}
 		char[] declaringType = getDeclaringType(proposal);
 		return declaringType != null && TypeFilter.isFiltered(declaringType);
 	}

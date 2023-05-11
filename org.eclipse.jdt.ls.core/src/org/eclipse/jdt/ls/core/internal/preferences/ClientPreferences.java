@@ -15,6 +15,7 @@ package org.eclipse.jdt.ls.core.internal.preferences;
 import static org.apache.commons.lang3.BooleanUtils.isTrue;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -163,6 +164,10 @@ public class ClientPreferences {
 		return v3supported && isDynamicRegistrationSupported(capabilities.getTextDocument().getSelectionRange());
 	}
 
+	public boolean isInlayHintDynamicRegistered() {
+		return v3supported && isDynamicRegistrationSupported(capabilities.getTextDocument().getInlayHint());
+	}
+
 	public boolean isWillSaveRegistered() {
 		return v3supported && capabilities.getTextDocument().getSynchronization() != null && isTrue(capabilities.getTextDocument().getSynchronization().getWillSave());
 	}
@@ -219,6 +224,10 @@ public class ClientPreferences {
 		return Boolean.parseBoolean(extendedClientCapabilities.getOrDefault("extractInterfaceSupport", "false").toString());
 	}
 
+	public boolean isAdvancedUpgradeGradleSupport() {
+		return Boolean.parseBoolean(extendedClientCapabilities.getOrDefault("advancedUpgradeGradleSupport", "false").toString());
+	}
+
 	public boolean isExtractMethodInferSelectionSupported() {
 		Object supportList = extendedClientCapabilities.getOrDefault("inferSelectionSupport", new ArrayList<>());
 		return supportList instanceof List<?> list && list.contains("extractMethod");
@@ -266,10 +275,6 @@ public class ClientPreferences {
 		return Boolean.parseBoolean(extendedClientCapabilities.getOrDefault("gradleChecksumWrapperPromptSupport", "false").toString());
 	}
 
-	public boolean isResolveAdditionalTextEditsSupport() {
-		return Boolean.parseBoolean(extendedClientCapabilities.getOrDefault("resolveAdditionalTextEditsSupport", "false").toString());
-	}
-
 	/**
 	 * The command which will be triggered when the completion item is selected. Different clients can have different
 	 * command ids. The command id is set in the 'onCompletionItemSelectedCommand' field of the extended client capabilities.
@@ -285,11 +290,6 @@ public class ClientPreferences {
 				&& capabilities.getTextDocument().getCompletion().getCompletionItem().getDocumentationFormat() != null
 				&& capabilities.getTextDocument().getCompletion().getCompletionItem().getDocumentationFormat().contains(MarkupKind.MARKDOWN);
 		//@formatter:on
-	}
-
-	@Deprecated
-	public boolean isWorkspaceEditResourceChangesSupported() {
-		return capabilities.getWorkspace() != null && capabilities.getWorkspace().getWorkspaceEdit() != null && isTrue(capabilities.getWorkspace().getWorkspaceEdit().getResourceChanges());
 	}
 
 	public boolean isResourceOperationSupported() {
@@ -384,6 +384,86 @@ public class ClientPreferences {
 			&& capabilities.getTextDocument().getCompletion().getCompletionItem() != null
 			&& capabilities.getTextDocument().getCompletion().getCompletionItem().getInsertReplaceSupport() != null
 			&& capabilities.getTextDocument().getCompletion().getCompletionItem().getInsertReplaceSupport().booleanValue();
+	}
+
+	public boolean isCompletionListItemDefaultsEditRangeSupport() {
+		return v3supported
+			&& capabilities.getTextDocument().getCompletion() != null
+			&& capabilities.getTextDocument().getCompletion().getCompletionList() != null
+			&& capabilities.getTextDocument().getCompletion().getCompletionList().getItemDefaults() != null
+			&& capabilities.getTextDocument().getCompletion().getCompletionList().getItemDefaults().contains("editRange");
+	}
+
+	public boolean isCompletionListItemDefaultsInsertTextFormatSupport() {
+		return v3supported
+			&& capabilities.getTextDocument().getCompletion() != null
+			&& capabilities.getTextDocument().getCompletion().getCompletionList() != null
+			&& capabilities.getTextDocument().getCompletion().getCompletionList().getItemDefaults() != null
+			&& capabilities.getTextDocument().getCompletion().getCompletionList().getItemDefaults().contains("insertTextFormat");
+	}
+
+	public boolean isCompletionListItemDefaultsSupport() {
+		return isCompletionListItemDefaultsEditRangeSupport() || isCompletionListItemDefaultsInsertTextFormatSupport();
+	}
+
+	public boolean isCompletionItemLabelDetailsSupport() {
+		return v3supported
+			&& capabilities.getTextDocument().getCompletion() != null
+			&& capabilities.getTextDocument().getCompletion().getCompletionItem() != null
+			&& capabilities.getTextDocument().getCompletion().getCompletionItem().getLabelDetailsSupport() != null
+			&& capabilities.getTextDocument().getCompletion().getCompletionItem().getLabelDetailsSupport().booleanValue();
+	}
+
+	public boolean isResolveAdditionalTextEditsSupport() {
+		return isPropertySupportedForCompletionResolve("additionalTextEdits")
+			// TODO: the extended capability 'resolveAdditionalTextEditsSupport' should be deprecated.
+			|| Boolean.parseBoolean(extendedClientCapabilities.getOrDefault("resolveAdditionalTextEditsSupport", "false").toString());
+	}
+
+	public boolean isCompletionResolveDocumentSupport() {
+		return isPropertySupportedForCompletionResolve("documentation");
+	}
+
+	public boolean isCompletionResolveDetailSupport() {
+		return isPropertySupportedForCompletionResolve("detail");
+	}
+
+	public boolean isPropertySupportedForCompletionResolve(String property) {
+		return (v3supported
+			&& capabilities.getTextDocument().getCompletion() != null
+			&& capabilities.getTextDocument().getCompletion().getCompletionItem() != null
+			&& capabilities.getTextDocument().getCompletion().getCompletionItem().getResolveSupport() != null
+			&& capabilities.getTextDocument().getCompletion().getCompletionItem().getResolveSupport().getProperties() != null
+			&& capabilities.getTextDocument().getCompletion().getCompletionItem().getResolveSupport().getProperties().contains(property));
+	}
+
+	public boolean isInlayHintRefreshSupported() {
+		return v3supported
+			&& capabilities.getWorkspace().getInlayHint() != null
+			&& capabilities.getWorkspace().getInlayHint().getRefreshSupport() != null
+			&& capabilities.getWorkspace().getInlayHint().getRefreshSupport().booleanValue();
+	}
+
+	public Collection<String> excludedMarkerTypes() {
+		Object list = extendedClientCapabilities.getOrDefault("excludedMarkerTypes", null);
+		return list instanceof Collection<?> excludedMarkerTypes //
+				? excludedMarkerTypes.stream().filter(String.class::isInstance).map(String.class::cast).toList() //
+				: List.of();
+	}
+
+	public boolean isChangeAnnotationSupport() {
+		return v3supported
+			&& capabilities.getWorkspace() != null
+			&& capabilities.getWorkspace().getWorkspaceEdit() != null
+			&& capabilities.getWorkspace().getWorkspaceEdit().getChangeAnnotationSupport() != null;
+    }
+
+	public boolean skipProjectConfiguration() {
+		return Boolean.parseBoolean(extendedClientCapabilities.getOrDefault("skipProjectConfiguration", "false").toString());
+	}
+
+	public boolean skipTextEventPropagation() {
+		return Boolean.parseBoolean(extendedClientCapabilities.getOrDefault("skipTextEventPropagation", "false").toString());
 	}
 
 }

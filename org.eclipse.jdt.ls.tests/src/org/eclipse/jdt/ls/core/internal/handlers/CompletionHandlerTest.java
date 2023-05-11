@@ -46,6 +46,7 @@ import org.eclipse.jdt.core.JavaCore;
 import org.eclipse.jdt.core.JavaModelException;
 import org.eclipse.jdt.core.manipulation.CoreASTProvider;
 import org.eclipse.jdt.internal.codeassist.impl.AssistOptions;
+import org.eclipse.jdt.ls.core.contentassist.CompletionRanking;
 import org.eclipse.jdt.ls.core.internal.JDTUtils;
 import org.eclipse.jdt.ls.core.internal.JSONUtility;
 import org.eclipse.jdt.ls.core.internal.JavaClientConnection;
@@ -73,6 +74,7 @@ import org.eclipse.lsp4j.InsertReplaceEdit;
 import org.eclipse.lsp4j.InsertTextFormat;
 import org.eclipse.lsp4j.MarkupContent;
 import org.eclipse.lsp4j.MarkupKind;
+import org.eclipse.lsp4j.Position;
 import org.eclipse.lsp4j.Range;
 import org.eclipse.lsp4j.TextDocumentContentChangeEvent;
 import org.eclipse.lsp4j.TextEdit;
@@ -123,6 +125,7 @@ public class CompletionHandlerTest extends AbstractCompilationUnitBasedTest {
 		javaClient = new JavaClientConnection(client);
 		lifeCycleHandler = new DocumentLifeCycleHandler(javaClient, preferenceManager, projectsManager, true);
 		preferences.setPostfixCompletionEnabled(false);
+		preferences.setCompletionLazyResolveTextEditEnabled(true);
 	}
 
 	@After
@@ -132,6 +135,9 @@ public class CompletionHandlerTest extends AbstractCompilationUnitBasedTest {
 
 	@Test
 	public void testCompletion_javadoc() throws Exception {
+		ClientPreferences mockCapabilies = Mockito.mock(ClientPreferences.class);
+		Mockito.when(preferenceManager.getClientPreferences()).thenReturn(mockCapabilies);
+		Mockito.when(mockCapabilies.isCompletionResolveDocumentSupport()).thenReturn(true);
 		IJavaProject javaProject = JavaCore.create(project);
 		ICompilationUnit unit = (ICompilationUnit) javaProject.findElement(new Path("org/sample/TestJavadoc.java"));
 		unit.becomeWorkingCopy(null);
@@ -163,6 +169,7 @@ public class CompletionHandlerTest extends AbstractCompilationUnitBasedTest {
 		ClientPreferences mockCapabilies = Mockito.mock(ClientPreferences.class);
 		Mockito.when(preferenceManager.getClientPreferences()).thenReturn(mockCapabilies);
 		Mockito.when(mockCapabilies.isSupportsCompletionDocumentationMarkdown()).thenReturn(true);
+		Mockito.when(mockCapabilies.isCompletionResolveDocumentSupport()).thenReturn(true);
 		ICompilationUnit unit = (ICompilationUnit) javaProject.findElement(new Path("org/sample/TestJavadoc.java"));
 		unit.becomeWorkingCopy(null);
 		String joinOnCompletion = System.getProperty(JDTLanguageServer.JAVA_LSP_JOIN_ON_COMPLETION);
@@ -259,7 +266,6 @@ public class CompletionHandlerTest extends AbstractCompilationUnitBasedTest {
 			@SuppressWarnings("unchecked")
 			Map<String,String> data = (Map<String, String>) item.getData();
 			assertNotNull(data);
-			assertTrue(isNotBlank(data.get(CompletionResolveHandler.DATA_FIELD_URI)));
 			assertTrue(isNotBlank(data.get(CompletionResolveHandler.DATA_FIELD_PROPOSAL_ID)));
 			assertTrue(isNotBlank(data.get(CompletionResolveHandler.DATA_FIELD_REQUEST_ID)));
 		}
@@ -278,20 +284,40 @@ public class CompletionHandlerTest extends AbstractCompilationUnitBasedTest {
 		assertNotNull(list);
 		assertFalse("No proposals were found",list.getItems().isEmpty());
 
-		List<CompletionItem> items = new ArrayList<>(list.getItems());
-		for ( CompletionItem item : items) {
-			@SuppressWarnings("unchecked")
-			Map<String,String> data = (Map<String, String>) item.getData();
-			assertNotNull(data);
-			String uri = data.get(CompletionResolveHandler.DATA_FIELD_URI);
-			assertTrue(isNotBlank(uri));
-			assertTrue("unexpected URI prefix: " + uri, uri.matches("file://.*/src/java/Foo\\.java"));
-		}
+		Map<String,String> data = (Map<String, String>) list.getItems().get(0).getData();
+		long requestId = Long.parseLong(data.get(CompletionResolveHandler.DATA_FIELD_REQUEST_ID));
+		CompletionResponse completionResponse = CompletionResponses.get(requestId);
+		assertNotNull(completionResponse);
+		String uri = completionResponse.getCommonData(CompletionResolveHandler.DATA_FIELD_URI);
+		assertNotNull(uri);
+		assertTrue("unexpected URI prefix: " + uri, uri.matches("file://.*/src/java/Foo\\.java"));
+	}
+
+	@Test
+	public void testCompletion_dataFieldExecutionTime() throws Exception {
+		ICompilationUnit unit = getWorkingCopy(
+			"src/java/Foo.java",
+			"public class Foo {\n"+
+				"	void foo() {\n"+
+				"		Objec\n"+
+				"	}\n"+
+				"}\n");
+		CompletionList list = requestCompletions(unit, "Objec");
+		assertNotNull(list);
+		assertFalse("No proposals were found",list.getItems().isEmpty());
+
+		Map<String,String> data = (Map<String, String>) list.getItems().get(0).getData();
+		long requestId = Long.parseLong(data.get(CompletionResolveHandler.DATA_FIELD_REQUEST_ID));
+		CompletionResponse completionResponse = CompletionResponses.get(requestId);
+		assertNotNull(completionResponse);
+		String time = completionResponse.getCommonData(CompletionRanking.COMPLETION_EXECUTION_TIME);
+		assertNotNull(time);
 	}
 
 
 	@Test
 	public void testCompletion_constructor() throws Exception{
+		when(preferenceManager.getClientPreferences().isCompletionItemLabelDetailsSupport()).thenReturn(true);
 		ICompilationUnit unit = getWorkingCopy(
 				"src/java/Foo.java",
 				"public class Foo {\n"+
@@ -307,7 +333,10 @@ public class CompletionHandlerTest extends AbstractCompilationUnitBasedTest {
 		Comparator<CompletionItem> comparator = (CompletionItem a, CompletionItem b) -> a.getSortText().compareTo(b.getSortText());
 		Collections.sort(items, comparator);
 		CompletionItem ctor = items.get(0);
-		assertEquals("Object()", ctor.getLabel());
+		assertEquals("Object", ctor.getLabel());
+		// createMethodProposalLabel
+		assertEquals("()", ctor.getLabelDetails().getDetail());
+		assertNull(ctor.getLabelDetails().getDescription());
 		assertEquals("java.lang.Object.Object()", ctor.getDetail());
 		assertEquals("Object", ctor.getInsertText());
 
@@ -327,6 +356,7 @@ public class CompletionHandlerTest extends AbstractCompilationUnitBasedTest {
 
 	@Test
 	public void testCompletion_import_package() throws JavaModelException{
+		when(preferenceManager.getClientPreferences().isCompletionItemLabelDetailsSupport()).thenReturn(true);
 		ICompilationUnit unit = getWorkingCopy(
 				"src/java/Foo.java",
 				"import java.sq \n" +
@@ -343,6 +373,9 @@ public class CompletionHandlerTest extends AbstractCompilationUnitBasedTest {
 		// Check completion item
 		assertNull(item.getInsertText());
 		assertEquals("java.sql",item.getLabel());
+		// createPackageProposalLabel
+		assertNull(item.getLabelDetails().getDetail());
+		assertEquals("(package)",item.getLabelDetails().getDescription());
 		assertEquals("(package) java.sql", item.getDetail());
 		assertEquals(CompletionItemKind.Module, item.getKind() );
 		assertEquals("999999215", item.getSortText());
@@ -554,6 +587,8 @@ public class CompletionHandlerTest extends AbstractCompilationUnitBasedTest {
 
 	@Test
 	public void testCompletion_import_static() throws JavaModelException{
+		when(preferenceManager.getClientPreferences().isCompletionItemLabelDetailsSupport()).thenReturn(true);
+
 		ICompilationUnit unit = getWorkingCopy(
 				"src/java/Foo.java",
 				"import static java.util.concurrent.TimeUnit. \n" +
@@ -571,7 +606,12 @@ public class CompletionHandlerTest extends AbstractCompilationUnitBasedTest {
 		CompletionItem daysFieldItem = list.getItems().get(0);
 		// Check completion item
 		assertEquals("DAYS", daysFieldItem.getInsertText());
-		assertEquals("DAYS : TimeUnit", daysFieldItem.getLabel());
+		// createLabelWithTypeAndDeclaration
+		assertEquals("DAYS", daysFieldItem.getLabel());
+		assertEquals("TimeUnit", daysFieldItem.getLabelDetails().getDescription());
+		assertNull(daysFieldItem.getLabelDetails().getDetail());
+
+		//
 		assertEquals(CompletionItemKind.EnumMember, daysFieldItem.getKind());
 		assertEquals("999999210", daysFieldItem.getSortText());
 
@@ -596,7 +636,9 @@ public class CompletionHandlerTest extends AbstractCompilationUnitBasedTest {
 		CompletionItem valuesMethodItem = list.getItems().get(7);
 		// Check completion item
 		assertEquals("valueOf", valuesMethodItem.getInsertText());
-		assertEquals("valueOf(String) : TimeUnit", valuesMethodItem.getLabel());
+		assertEquals("valueOf", valuesMethodItem.getLabel());
+		assertEquals("(String)", valuesMethodItem.getLabelDetails().getDetail());
+		assertEquals("TimeUnit", valuesMethodItem.getLabelDetails().getDescription());
 		assertEquals(CompletionItemKind.Method, valuesMethodItem.getKind());
 		assertEquals("999999211", valuesMethodItem.getSortText());
 		TextEdit teValues = valuesMethodItem.getTextEdit().getLeft();
@@ -814,11 +856,15 @@ public class CompletionHandlerTest extends AbstractCompilationUnitBasedTest {
 		}
 	}
 
-	private ClientPreferences mockClientPreferences(boolean supportCompletionSnippets, boolean supportSignatureHelp) {
+	private ClientPreferences mockClientPreferences(boolean supportCompletionSnippets, boolean supportSignatureHelp, boolean isCompletionListItemDefaultsSupport) {
 		ClientPreferences mockCapabilies = Mockito.mock(ClientPreferences.class);
 		Mockito.when(preferenceManager.getClientPreferences()).thenReturn(mockCapabilies);
 		Mockito.when(mockCapabilies.isCompletionSnippetsSupported()).thenReturn(supportCompletionSnippets);
 		Mockito.lenient().when(mockCapabilies.isSignatureHelpSupported()).thenReturn(supportSignatureHelp);
+		when(preferenceManager.getClientPreferences().isCompletionListItemDefaultsSupport()).thenReturn(isCompletionListItemDefaultsSupport);
+		when(preferenceManager.getClientPreferences().isCompletionListItemDefaultsEditRangeSupport()).thenReturn(isCompletionListItemDefaultsSupport);
+		when(preferenceManager.getClientPreferences().isCompletionListItemDefaultsInsertTextFormatSupport()).thenReturn(isCompletionListItemDefaultsSupport);
+		when(preferenceManager.getClientPreferences().isCompletionItemLabelDetailsSupport()).thenReturn(false);
 		return mockCapabilies;
 	}
 
@@ -844,6 +890,38 @@ public class CompletionHandlerTest extends AbstractCompilationUnitBasedTest {
 		assertEquals("Foo.myTestString : String", item.getDetail());
 		assertNotNull(item.getTextEdit());
 		assertTextEdit(4, 8, 15, "myTestString", item.getTextEdit().getLeft());
+		//Not checking the range end character
+	}
+
+	@Test
+	public void testCompletion_field_itemDefaults_enabled() throws JavaModelException{
+		mockClientPreferences(true, true, true);
+		//@formatter:off
+		ICompilationUnit unit = getWorkingCopy(
+				"src/java/Foo.java",
+				"import java.sq \n" +
+						"public class Foo {\n"+
+						"private String myTestString;\n"+
+						"	void foo() {\n"+
+						"   this.myTestS\n"+
+						"	}\n"+
+				"}\n");
+		//@formatter:on
+
+		CompletionList list = requestCompletions(unit, "this.myTestS");
+
+		assertNotNull(list);
+		assertNotNull(list.getItemDefaults().getEditRange());
+		assertEquals(InsertTextFormat.Snippet, list.getItemDefaults().getInsertTextFormat());
+
+		assertEquals(1, list.getItems().size());
+		CompletionItem item = list.getItems().get(0);
+		assertEquals(CompletionItemKind.Field, item.getKind());
+		assertEquals("myTestString", item.getInsertText());
+		assertEquals("Foo.myTestString : String", item.getDetail());
+		//check that the fields covered by itemDefaults are set to null
+		assertNull(item.getTextEdit());
+		assertNull(item.getInsertTextFormat());
 		//Not checking the range end character
 	}
 
@@ -974,6 +1052,35 @@ public class CompletionHandlerTest extends AbstractCompilationUnitBasedTest {
 	}
 
 	@Test
+	public void testSnippet_NonLazyResolve() throws JavaModelException {
+		try {
+			preferences.setCompletionLazyResolveTextEditEnabled(false);
+			//@formatter:off
+			ICompilationUnit unit = getWorkingCopy(
+				"src/org/sample/Test.java",
+				"package org.sample;\n" +
+				"public class Test {\n" +
+				"	public void testMethod() {\n" +
+				"		sysout" +
+				"	}\n" +
+				"}"
+			);
+			//@formatter:on
+			CompletionList list = requestCompletions(unit, "sysout");
+
+			assertNotNull(list);
+
+			List<CompletionItem> items = new ArrayList<>(list.getItems());
+			CompletionItem item = items.get(0);
+			assertEquals("sysout", item.getLabel());
+			String newText = item.getTextEdit().getLeft().getNewText();
+			assertEquals("System.out.println(${0});", newText);
+		} finally {
+			preferences.setCompletionLazyResolveTextEditEnabled(true);
+		}
+	}
+
+	@Test
 	public void testSnippet_sysout() throws JavaModelException {
 		//@formatter:off
 		ICompilationUnit unit = getWorkingCopy(
@@ -1018,7 +1125,7 @@ public class CompletionHandlerTest extends AbstractCompilationUnitBasedTest {
 		for (CompletionItem item : items) {
 			if (CompletionItemKind.Snippet.equals(item.getKind()) && "sout".equals(item.getLabel())) {
 				String insertText = item.getInsertText();
-		assertEquals("System.out.println(${0});", insertText);
+				assertEquals("System.out.println(${0});", insertText);
 				return;
 			}
 		}
@@ -1247,6 +1354,7 @@ public class CompletionHandlerTest extends AbstractCompilationUnitBasedTest {
 
 	@Test
 	public void testSnippet_while() throws JavaModelException {
+		when(preferenceManager.getClientPreferences().isCompletionItemLabelDetailsSupport()).thenReturn(true);
 		//@formatter:off
 		ICompilationUnit unit = getWorkingCopy(
 			"src/org/sample/Test.java",
@@ -1265,8 +1373,45 @@ public class CompletionHandlerTest extends AbstractCompilationUnitBasedTest {
 		List<CompletionItem> items = new ArrayList<>(list.getItems());
 		CompletionItem item = items.get(1);
 		assertEquals("while", item.getLabel());
+		assertNull(item.getLabelDetails().getDetail());
+		assertEquals("while statement", item.getLabelDetails().getDescription());
+
 		String insertText = item.getInsertText();
 		assertEquals("while (${1:condition:var(boolean)}) {\n\t$TM_SELECTED_TEXT${0}\n}", insertText);
+		CompletionItem resolved = server.resolveCompletionItem(item).join();
+		assertNotNull(resolved.getTextEdit());
+		assertEquals("while (${1:con}) {\n\t$TM_SELECTED_TEXT${0}\n}", resolved.getTextEdit().getLeft().getNewText());
+	}
+
+	@Test
+	public void testSnippet_while_itemDefaults_enabled_generic_snippets() throws JavaModelException {
+		mockClientPreferences(true, true, true);
+		//@formatter:off
+		ICompilationUnit unit = getWorkingCopy(
+			"src/org/sample/Test.java",
+			"package org.sample;\n" +
+			"public class Test {\n" +
+			"	public void testMethod(boolean con) {\n" +
+			"		while" +
+			"	}\n" +
+			"}"
+		);
+		//@formatter:on
+		CompletionList list = requestCompletions(unit, "while");
+
+		assertNotNull(list);
+		assertNotNull(list.getItemDefaults().getEditRange());
+		assertEquals(InsertTextFormat.Snippet, list.getItemDefaults().getInsertTextFormat());
+
+		List<CompletionItem> items = new ArrayList<>(list.getItems());
+		CompletionItem item = items.get(1);
+		assertEquals("while", item.getLabel());
+		String insertText = item.getTextEditText();
+		assertEquals("while (${1:condition:var(boolean)}) {\n\t$TM_SELECTED_TEXT${0}\n}", insertText);
+		//check that the fields covered by itemDefaults are set to null
+		assertNull(item.getTextEdit());
+		assertNull(item.getInsertTextFormat());
+
 		CompletionItem resolved = server.resolveCompletionItem(item).join();
 		assertNotNull(resolved.getTextEdit());
 		assertEquals("while (${1:con}) {\n\t$TM_SELECTED_TEXT${0}\n}", resolved.getTextEdit().getLeft().getNewText());
@@ -1633,6 +1778,28 @@ public class CompletionHandlerTest extends AbstractCompilationUnitBasedTest {
 	}
 
 	@Test
+	public void testSnippet_inner_class_itemDefaults_enabled_type_definition() throws JavaModelException {
+		mockClientPreferences(true, true, true);
+		ICompilationUnit unit = getWorkingCopy("src/org/sample/Test.java", "package org.sample;\npublic class Test {}\n");
+		CompletionList list = requestCompletions(unit, "");
+
+		assertNotNull(list);
+		assertEquals(InsertTextFormat.Snippet, list.getItemDefaults().getInsertTextFormat());
+
+		List<CompletionItem> items = new ArrayList<>(list.getItems());
+		assertFalse(items.isEmpty());
+		items.sort((i1, i2) -> (i1.getSortText().compareTo(i2.getSortText())));
+
+		CompletionItem item = items.get(5);
+		assertEquals("class", item.getLabel());
+		String te = item.getTextEditText();
+		assertEquals("/**\n * ${1:InnerTest}\n */\npublic class ${1:InnerTest} {\n\n\t${0}\n}", te);
+		//check that the fields covered by itemDefaults are set to null
+		assertNull(item.getTextEdit());
+		assertNull(item.getInsertTextFormat());
+	}
+
+	@Test
 	public void testSnippet_sibling_inner_class() throws JavaModelException {
 		ICompilationUnit unit = getWorkingCopy("src/org/sample/Test.java", "package org.sample;\npublic class Test {}\npublic class InnerTest{}\n");
 		CompletionList list = requestCompletions(unit, "package org.sample;\npublic class Test {}\npublic class InnerTest{}\n");
@@ -1840,7 +2007,7 @@ public class CompletionHandlerTest extends AbstractCompilationUnitBasedTest {
 			importProjects("eclipse/"+projectName);
 			project = WorkspaceHelper.getProject(projectName);
 		}
-		mockClientPreferences(supportSnippets, true);
+		mockClientPreferences(supportSnippets, true, false);
 
 		ICompilationUnit unit = getWorkingCopy(
 				"src/java/Foo.java",
@@ -1881,7 +2048,7 @@ public class CompletionHandlerTest extends AbstractCompilationUnitBasedTest {
 			importProjects("eclipse/" + projectName);
 			project = WorkspaceHelper.getProject(projectName);
 		}
-		mockClientPreferences(supportSnippets, true);
+		mockClientPreferences(supportSnippets, true, false);
 
 		ICompilationUnit unit = getWorkingCopy(
 				"src/java/Foo.java",
@@ -1920,6 +2087,7 @@ public class CompletionHandlerTest extends AbstractCompilationUnitBasedTest {
 
 	@Test
 	public void testCompletion_methodOverrideWithParams() throws Exception {
+		when(preferenceManager.getClientPreferences().isCompletionItemLabelDetailsSupport()).thenReturn(true);
 		ICompilationUnit unit = getWorkingCopy(
 				//@formatter:off
 				"src/org/sample/Test.java",
@@ -1954,6 +2122,7 @@ public class CompletionHandlerTest extends AbstractCompilationUnitBasedTest {
 
 	@Test
 	public void testCompletion_methodOverrideWithException() throws Exception {
+		when(preferenceManager.getClientPreferences().isCompletionItemLabelDetailsSupport()).thenReturn(true);
 		ICompilationUnit unit = getWorkingCopy(
 				//@formatter:off
 				"src/org/sample/Test.java",
@@ -1972,6 +2141,10 @@ public class CompletionHandlerTest extends AbstractCompilationUnitBasedTest {
 		assertEquals("deleteSomething", oride.getInsertText());
 		assertNotNull(oride.getTextEdit());
 		String text = oride.getTextEdit().getLeft().getNewText();
+
+		assertEquals(oride.getLabel(), "deleteSomething");
+		assertEquals(oride.getLabelDetails().getDetail(), "()");
+		assertEquals(oride.getLabelDetails().getDescription(), "void");
 
 		String expectedText = "@Override\n"+
 				"protected void deleteSomething() throws IOException {\n" +
@@ -2125,6 +2298,7 @@ public class CompletionHandlerTest extends AbstractCompilationUnitBasedTest {
 
 	@Test
 	public void testCompletion_AnonymousType() throws Exception {
+		when(preferenceManager.getClientPreferences().isCompletionItemLabelDetailsSupport()).thenReturn(true);
 		ICompilationUnit unit = getWorkingCopy(
 				"src/java/Foo.java",
 				"public class Foo {\n"+
@@ -2139,13 +2313,18 @@ public class CompletionHandlerTest extends AbstractCompilationUnitBasedTest {
 		CompletionList list = requestCompletions(unit, "new ");
 		assertNotNull(list);
 		CompletionItem ci = list.getItems().stream()
-				.filter(item -> item.getLabel().startsWith("Foo.IFoo()  Anonymous Inner Type"))
+				.filter(item -> item.getLabel().startsWith("Foo.IFoo"))
 				.findFirst().orElse(null);
 		assertNotNull(ci);
 
 		assertEquals("Foo.IFoo", ci.getInsertText());
 		assertEquals(CompletionItemKind.Constructor, ci.getKind());
-		assertEquals("java.Foo.IFoo", ci.getDetail());
+		// createAnonymousTypeLabel
+		assertEquals("Foo.IFoo", ci.getLabel());
+		assertEquals("()", ci.getLabelDetails().getDetail());
+		assertEquals("Anonymous Inner Type", ci.getLabelDetails().getDescription());
+
+
 		assertEquals("999998684", ci.getSortText());
 		assertNotNull(ci.getTextEdit().getLeft());
 		assertTextEdit(2, 23, 23, "IFoo() {\n" +
@@ -2436,6 +2615,9 @@ public class CompletionHandlerTest extends AbstractCompilationUnitBasedTest {
 
 	@Test
 	public void testCompletion_testMethodWithParams() throws Exception {
+		ClientPreferences mockCapabilies = Mockito.mock(ClientPreferences.class);
+		Mockito.when(preferenceManager.getClientPreferences()).thenReturn(mockCapabilies);
+		Mockito.when(mockCapabilies.isCompletionResolveDocumentSupport()).thenReturn(true);
 		ICompilationUnit unit = getWorkingCopy(
 		//@formatter:off
 		"src/org/sample/Test.java",
@@ -2905,6 +3087,7 @@ public class CompletionHandlerTest extends AbstractCompilationUnitBasedTest {
 		ClientPreferences mockCapabilies = Mockito.mock(ClientPreferences.class);
 		Mockito.when(preferenceManager.getClientPreferences()).thenReturn(mockCapabilies);
 		Mockito.when(mockCapabilies.isSupportsCompletionDocumentationMarkdown()).thenReturn(true);
+		Mockito.when(mockCapabilies.isCompletionResolveDocumentSupport()).thenReturn(true);
 		Mockito.lenient().when(mockCapabilies.isClassFileContentSupported()).thenReturn(true);
 
 		//@formatter:off
@@ -3076,7 +3259,7 @@ public class CompletionHandlerTest extends AbstractCompilationUnitBasedTest {
 			CompletionList list = requestCompletions(unit, "java.util");
 			assertNotNull(list);
 			List<String> packages = list.getItems().stream().map(i -> i.getLabel()).collect(Collectors.toList());
-			assertEquals("java.util.* packages were not filtered: " + packages.toString(), 1, packages.size());
+			assertTrue(packages.size() > 1);
 			assertEquals("java.util", packages.get(0));
 		} finally {
 			PreferenceManager.getPrefs(null).setFilteredTypes(Collections.emptyList());
@@ -3162,6 +3345,144 @@ public class CompletionHandlerTest extends AbstractCompilationUnitBasedTest {
 	}
 
 	@Test
+	public void testCompletion_IgnoreTypeFilterWhenImported1() throws JavaModelException {
+		ICompilationUnit unit = getWorkingCopy("src/org/sample/Test.java",
+		//@formatter:off
+				"package org.sample;\n"
+			+	"import java.util.List;"
+			+	"public class Test {\n\n"
+			+	"	void test() {\n\n"
+			+	"		List\n"
+			+	"	}\n"
+			+	"}\n");
+		//@formatter:on
+		try {
+			List<String> filteredTypes = new ArrayList<>();
+			filteredTypes.add("java.util.*");
+			PreferenceManager.getPrefs(null).setFilteredTypes(filteredTypes);
+
+			CompletionList list = requestCompletions(unit, "		List");
+			assertNotNull(list);
+			assertTrue(list.getItems().stream().anyMatch(t -> "java.util.List".equals(t.getDetail())));
+		} finally {
+			PreferenceManager.getPrefs(null).setFilteredTypes(Collections.emptyList());
+		}
+	}
+
+	@Test
+	public void testCompletion_IgnoreTypeFilterWhenImported2() throws JavaModelException {
+		ICompilationUnit unit = getWorkingCopy("src/org/sample/Test.java",
+		//@formatter:off
+				"package org.sample;\n"
+			+	"import java.util.*;"
+			+	"public class Test {\n\n"
+			+	"	void test() {\n\n"
+			+	"		List\n"
+			+	"	}\n"
+			+	"}\n");
+		//@formatter:on
+		try {
+			List<String> filteredTypes = new ArrayList<>();
+			filteredTypes.add("java.util.*");
+			PreferenceManager.getPrefs(null).setFilteredTypes(filteredTypes);
+
+			CompletionList list = requestCompletions(unit, "		List");
+			assertNotNull(list);
+			assertTrue(list.getItems().stream().anyMatch(t -> "java.util.List".equals(t.getDetail())));
+		} finally {
+			PreferenceManager.getPrefs(null).setFilteredTypes(Collections.emptyList());
+		}
+	}
+
+	@Test
+	public void testCompletion_IgnoreTypeFilterWhenImported3() throws JavaModelException {
+		ICompilationUnit unit = getWorkingCopy("src/org/sample/Test.java",
+		//@formatter:off
+				"package org.sample;\n"
+			+	"import static java.util.List.*;"
+			+	"public class Test {\n\n"
+			+	"	void test() {\n\n"
+			+	"		List\n"
+			+	"	}\n"
+			+	"}\n");
+		//@formatter:on
+		try {
+			List<String> filteredTypes = new ArrayList<>();
+			filteredTypes.add("java.util.*");
+			PreferenceManager.getPrefs(null).setFilteredTypes(filteredTypes);
+
+			CompletionList list = requestCompletions(unit, "		List");
+			assertNotNull(list);
+			assertTrue(list.getItems().stream().anyMatch(t -> "java.util.List".equals(t.getDetail())));
+		} finally {
+			PreferenceManager.getPrefs(null).setFilteredTypes(Collections.emptyList());
+		}
+	}
+
+	@Test
+	public void testCompletion_IgnoreTypeFilterWhenImported4() throws JavaModelException {
+		ICompilationUnit unit = getWorkingCopy("src/org/sample/Test.java",
+		//@formatter:off
+				"package org.sample;\n"
+			+	"import static java.util.List.DUMMY;"
+			+	"public class Test {\n\n"
+			+	"	void test() {\n\n"
+			+	"		List\n"
+			+	"	}\n"
+			+	"}\n");
+		//@formatter:on
+		try {
+			List<String> filteredTypes = new ArrayList<>();
+			filteredTypes.add("java.util.*");
+			PreferenceManager.getPrefs(null).setFilteredTypes(filteredTypes);
+
+			CompletionList list = requestCompletions(unit, "		List");
+			assertNotNull(list);
+			assertTrue(list.getItems().stream().anyMatch(t -> "java.util.List".equals(t.getDetail())));
+		} finally {
+			PreferenceManager.getPrefs(null).setFilteredTypes(Collections.emptyList());
+		}
+	}
+
+	@Test
+	public void testCompletion_IgnoreTypeFilterWhenImported5() throws JavaModelException {
+		ICompilationUnit unit = getWorkingCopy("src/org/sample/Test.java", """
+				package org.sample;
+				import java.util.List;
+				public class Test {
+				}""");
+		try {
+			List<String> filteredTypes = new ArrayList<>();
+			filteredTypes.add("java.util.*");
+			PreferenceManager.getPrefs(null).setFilteredTypes(filteredTypes);
+
+			CompletionList list = requestCompletions(unit, "java.util.");
+			assertNotNull(list);
+		} finally {
+			PreferenceManager.getPrefs(null).setFilteredTypes(Collections.emptyList());
+		}
+	}
+
+	@Test
+	public void testCompletion_IgnoreTypeFilterWhenImported6() throws JavaModelException {
+		ICompilationUnit unit = getWorkingCopy("src/org/sample/Test.java", """
+				package org.sample;
+				import java.util.
+				public class Test {
+				}""");
+		try {
+			List<String> filteredTypes = new ArrayList<>();
+			filteredTypes.add("java.util.*");
+			PreferenceManager.getPrefs(null).setFilteredTypes(filteredTypes);
+
+			CompletionList list = requestCompletions(unit, "java.util.");
+			assertNotNull(list);
+		} finally {
+			PreferenceManager.getPrefs(null).setFilteredTypes(Collections.emptyList());
+		}
+	}
+
+	@Test
 	public void testCompletion_InvalidJavadoc() throws Exception {
 		importProjects("maven/aspose");
 		IProject project = null;
@@ -3183,6 +3504,9 @@ public class CompletionHandlerTest extends AbstractCompilationUnitBasedTest {
 
 	@Test
 	public void testCompletion_ConstantDefaultValue() throws JavaModelException {
+		ClientPreferences mockCapabilies = Mockito.mock(ClientPreferences.class);
+		Mockito.when(preferenceManager.getClientPreferences()).thenReturn(mockCapabilies);
+		Mockito.when(mockCapabilies.isCompletionResolveDocumentSupport()).thenReturn(true);
 		ICompilationUnit unit = getWorkingCopy("src/org/sample/Test.java",
 		//@formatter:off
 				"package org.sample;\n"
@@ -3223,6 +3547,9 @@ public class CompletionHandlerTest extends AbstractCompilationUnitBasedTest {
 	// See https://github.com/redhat-developer/vscode-java/issues/1258
 	@Test
 	public void testCompletion_javadocOriginal() throws JavaModelException {
+		ClientPreferences mockCapabilies = Mockito.mock(ClientPreferences.class);
+		Mockito.when(preferenceManager.getClientPreferences()).thenReturn(mockCapabilies);
+		Mockito.when(mockCapabilies.isCompletionResolveDocumentSupport()).thenReturn(true);
 		ICompilationUnit unit = getWorkingCopy("src/org/sample/Test.java",
 		//@formatter:off
 				"package org.sample;\n"
@@ -3250,6 +3577,7 @@ public class CompletionHandlerTest extends AbstractCompilationUnitBasedTest {
 	// See https://github.com/redhat-developer/vscode-java/issues/2034
 	@Test
 	public void testCompletion_Anonymous() throws JavaModelException {
+		when(preferenceManager.getClientPreferences().isCompletionItemLabelDetailsSupport()).thenReturn(true);
 		ICompilationUnit unit = getWorkingCopy("src/org/sample/Test.java",
 		//@formatter:off
 					"package org.sample;\n"
@@ -3268,7 +3596,12 @@ public class CompletionHandlerTest extends AbstractCompilationUnitBasedTest {
 		CompletionList list = requestCompletions(unit, "= A");
 		assertNotNull(list);
 		assertTrue(list.getItems().size() > 0);
-		CompletionItem ci = list.getItems().stream().filter(item -> item.getLabel().equals("Arrays - java.util")).findFirst().orElse(null);
+		CompletionItem ci = list.getItems().stream().filter(item -> item.getLabel().equals("Arrays")).findFirst().orElse(null);
+		// createTypeProposalLabel
+		assertEquals("Arrays", ci.getLabel());
+		assertNull(ci.getLabelDetails().getDetail());
+		assertEquals("java.util", ci.getLabelDetails().getDescription());
+
 		assertEquals(CompletionItemKind.Class, ci.getKind());
 		assertEquals("java.util.Arrays", ci.getDetail());
 	}
@@ -3353,6 +3686,7 @@ public class CompletionHandlerTest extends AbstractCompilationUnitBasedTest {
 
 	@Test
 	public void testCompletion_Lambda() throws Exception {
+		when(preferenceManager.getClientPreferences().isCompletionItemLabelDetailsSupport()).thenReturn(true);
 		ICompilationUnit unit = getWorkingCopy("src/org/sample/Test.java", String.join("\n",
 			"import java.util.function.Consumer;",
 			"public class Test {",
@@ -3365,10 +3699,14 @@ public class CompletionHandlerTest extends AbstractCompilationUnitBasedTest {
 		CompletionList list = requestCompletions(unit, "c = ");
 		assertNotNull(list);
 		CompletionItem lambda = list.getItems().stream()
-				.filter(item -> (item.getLabel().matches("\\(Object \\w+\\) -> : void") && item.getKind() == CompletionItemKind.Method))
+				.filter(item -> (item.getLabel().matches("\\(Object \\w+\\) ->") && item.getKind() == CompletionItemKind.Method))
 				.findFirst().orElse(null);
 		assertNotNull(lambda);
 		assertTrue(lambda.getTextEdit().getLeft().getNewText().matches("\\$\\{1:\\w+\\} -> \\$\\{0\\}"));
+
+		assertEquals(lambda.getLabel(), "(Object arg0) ->");
+		assertNull(lambda.getLabelDetails().getDetail());
+		assertEquals(lambda.getLabelDetails().getDescription(), "void");
 	}
 
 	@Test
@@ -3504,7 +3842,10 @@ public class CompletionHandlerTest extends AbstractCompilationUnitBasedTest {
 	}
 
 	@Test
-	public void testCompletion_withConflictingTypeNames() throws Exception{
+	public void testCompletion_withConflictingTypeNames() throws Exception {
+		ClientPreferences mockCapabilies = Mockito.mock(ClientPreferences.class);
+		Mockito.when(preferenceManager.getClientPreferences()).thenReturn(mockCapabilies);
+		Mockito.when(mockCapabilies.isResolveAdditionalTextEditsSupport()).thenReturn(true);
 		getWorkingCopy("src/java/List.java",
 			"package util;\n" +
 			"public class List {\n" +
@@ -3528,7 +3869,8 @@ public class CompletionHandlerTest extends AbstractCompilationUnitBasedTest {
 		List<CompletionItem> items = list.getItems().stream().filter(p -> "java.util.List".equals(p.getDetail()))
 			.collect(Collectors.toList());
 		assertFalse("java.util.List not found",items.isEmpty());
-		assertEquals("java.util.List", items.get(0).getTextEdit().getLeft().getNewText());
+		CompletionItem resolved = server.resolveCompletionItem(list.getItems().get(0)).join();
+		assertEquals("java.util.List", resolved.getTextEdit().getLeft().getNewText());
 	}
 
 	@Test
@@ -3663,6 +4005,28 @@ public class CompletionHandlerTest extends AbstractCompilationUnitBasedTest {
 		}
 	}
 
+	@Test
+	public void testCompletion_syserrSnipper() throws JavaModelException {
+		preferenceManager.getPreferences().setCompletionLazyResolveTextEditEnabled(false);
+		ICompilationUnit unit = getWorkingCopy(
+		//@formatter:off
+		"src/java/Foo.java",
+		"""
+		public class Foo {
+			void f() {
+				syser
+			} 
+		};
+		""");
+		//@formatter:on
+		CompletionList list = requestCompletions(unit, "syser");
+		assertNotNull(list);
+		assertEquals(1, list.getItems().size());
+		CompletionItem item = list.getItems().get(0);
+		assertEquals("syserr", item.getLabel());
+		assertEquals(new Range(new Position(2, 2), new Position(2, 7)), item.getTextEdit().map(TextEdit::getRange, InsertReplaceEdit::getReplace));
+	}
+
 	private CompletionList requestCompletions(ICompilationUnit unit, String completeBehind) throws JavaModelException {
 		return requestCompletions(unit, completeBehind, 0);
 	}
@@ -3686,9 +4050,9 @@ public class CompletionHandlerTest extends AbstractCompilationUnitBasedTest {
 		mockLSPClient(false, false);
 	}
 
-	private void mockLSPClient(boolean isSnippetSupported, boolean isSignatureHelpSuported) {
+	private void mockLSPClient(boolean isSnippetSupported, boolean isSignatureHelpSupported) {
 		// Mock the preference manager to use LSP v3 support.
 		when(preferenceManager.getClientPreferences().isCompletionSnippetsSupported()).thenReturn(isSnippetSupported);
-		when(preferenceManager.getClientPreferences().isSignatureHelpSupported()).thenReturn(isSignatureHelpSuported);
+		when(preferenceManager.getClientPreferences().isSignatureHelpSupported()).thenReturn(isSignatureHelpSupported);
 	}
 }

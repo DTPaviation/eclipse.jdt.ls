@@ -12,6 +12,11 @@
  *******************************************************************************/
 package org.eclipse.jdt.ls.core.internal;
 
+import java.io.IOException;
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -35,14 +40,15 @@ import org.eclipse.jdt.ls.core.internal.handlers.FormatterHandler;
 import org.eclipse.jdt.ls.core.internal.handlers.PasteEventHandler;
 import org.eclipse.jdt.ls.core.internal.handlers.PasteEventHandler.PasteEventParams;
 import org.eclipse.jdt.ls.core.internal.handlers.ResolveSourceMappingHandler;
+import org.eclipse.jdt.ls.core.internal.managers.ContentProviderManager;
 import org.eclipse.jdt.ls.core.internal.managers.GradleProjectImporter;
-import org.eclipse.lsp4j.ResolveTypeHierarchyItemParams;
 import org.eclipse.lsp4j.SymbolInformation;
 import org.eclipse.lsp4j.TextDocumentPositionParams;
-import org.eclipse.lsp4j.TypeHierarchyDirection;
-import org.eclipse.lsp4j.TypeHierarchyItem;
-import org.eclipse.lsp4j.TypeHierarchyParams;
 import org.eclipse.lsp4j.WorkspaceEdit;
+import org.eclipse.lsp4j.legacy.typeHierarchy.ResolveTypeHierarchyItemParams;
+import org.eclipse.lsp4j.legacy.typeHierarchy.TypeHierarchyDirection;
+import org.eclipse.lsp4j.legacy.typeHierarchy.TypeHierarchyItem;
+import org.eclipse.lsp4j.legacy.typeHierarchy.TypeHierarchyParams;
 
 public class JDTDelegateCommandHandler implements IDelegateCommandHandler {
 
@@ -155,6 +161,14 @@ public class JDTDelegateCommandHandler implements IDelegateCommandHandler {
 					String proposalId = (String) arguments.get(1);
 					completionHandler.onDidCompletionItemSelect(requestId, proposalId);
 					return new Object();
+				case "java.decompile":
+					String uri = (String) arguments.get(0);
+					try {
+						ContentProviderManager contentProvider = JavaLanguageServerPlugin.getContentProviderManager();
+						return contentProvider.getContent(new URI(uri), monitor);
+					} catch (URISyntaxException e) {
+						return false;
+					}
 				default:
 					break;
 			}

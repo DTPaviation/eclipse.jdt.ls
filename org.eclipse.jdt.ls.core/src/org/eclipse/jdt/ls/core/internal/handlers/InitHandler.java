@@ -41,13 +41,17 @@ import org.eclipse.core.runtime.jobs.Job;
 import org.eclipse.jdt.ls.core.internal.JavaClientConnection;
 import org.eclipse.jdt.ls.core.internal.JavaLanguageServerPlugin;
 import org.eclipse.jdt.ls.core.internal.JobHelpers;
+import org.eclipse.jdt.ls.core.internal.ProjectUtils;
 import org.eclipse.jdt.ls.core.internal.ServiceStatus;
 import org.eclipse.jdt.ls.core.internal.managers.ProjectsManager;
+import org.eclipse.jdt.ls.core.internal.managers.TelemetryManager;
 import org.eclipse.jdt.ls.core.internal.preferences.PreferenceManager;
 import org.eclipse.jdt.ls.core.internal.preferences.Preferences;
 import org.eclipse.jdt.ls.internal.gradle.checksums.WrapperValidator;
 import org.eclipse.lsp4j.CodeActionOptions;
 import org.eclipse.lsp4j.CodeLensOptions;
+import org.eclipse.lsp4j.CompletionItemOptions;
+import org.eclipse.lsp4j.CompletionOptions;
 import org.eclipse.lsp4j.DocumentFilter;
 import org.eclipse.lsp4j.DocumentOnTypeFormattingOptions;
 import org.eclipse.lsp4j.ExecuteCommandOptions;
@@ -76,11 +80,18 @@ final public class InitHandler extends BaseInitHandler {
 
 	private WorkspaceExecuteCommandHandler commandHandler;
 
+	private TelemetryManager telemetryManager;
+
 	public InitHandler(ProjectsManager manager, PreferenceManager preferenceManager, JavaClientConnection connection, WorkspaceExecuteCommandHandler commandHandler) {
+		this(manager, preferenceManager, connection, commandHandler, new TelemetryManager());
+	}
+
+	public InitHandler(ProjectsManager manager, PreferenceManager preferenceManager, JavaClientConnection connection, WorkspaceExecuteCommandHandler commandHandler, TelemetryManager telemetryManager) {
 		super(manager, preferenceManager);
 		this.connection = connection;
 		this.preferenceManager = preferenceManager;
 		this.commandHandler = commandHandler;
+		this.telemetryManager = telemetryManager;
 	}
 
 	@Override
@@ -102,7 +113,7 @@ final public class InitHandler extends BaseInitHandler {
 	public void registerCapabilities(InitializeResult initializeResult) {
 		ServerCapabilities capabilities = new ServerCapabilities();
 		if (!preferenceManager.getClientPreferences().isCompletionDynamicRegistered()) {
-			capabilities.setCompletionProvider(CompletionHandler.DEFAULT_COMPLETION_OPTIONS);
+			capabilities.setCompletionProvider(CompletionHandler.getDefaultCompletionOptions(preferenceManager));
 		}
 		if (!preferenceManager.getClientPreferences().isFormattingDynamicRegistrationSupported()) {
 			capabilities.setDocumentFormattingProvider(Boolean.TRUE);
@@ -173,6 +184,10 @@ final public class InitHandler extends BaseInitHandler {
 		if (!preferenceManager.getClientPreferences().isSelectionRangeDynamicRegistered()) {
 			capabilities.setSelectionRangeProvider(Boolean.TRUE);
 		}
+		if (!preferenceManager.getClientPreferences().isInlayHintDynamicRegistered()) {
+			capabilities.setInlayHintProvider(Boolean.TRUE);
+		}
+
 		capabilities.setCallHierarchyProvider(Boolean.TRUE);
 		TextDocumentSyncOptions textDocumentSyncOptions = new TextDocumentSyncOptions();
 		textDocumentSyncOptions.setOpenClose(Boolean.TRUE);
@@ -244,6 +259,7 @@ final public class InitHandler extends BaseInitHandler {
 					projectsManager.configureFilters(monitor);
 					JavaLanguageServerPlugin.logInfo("Workspace initialized in " + (System.currentTimeMillis() - start) + "ms");
 					connection.sendStatus(ServiceStatus.Started, "Ready");
+					telemetryManager.onProjectsInitialized(projectsManager, System.currentTimeMillis());
 				} catch (OperationCanceledException e) {
 					connection.sendStatus(ServiceStatus.Error, "Initialization has been cancelled.");
 					return Status.CANCEL_STATUS;
@@ -281,7 +297,7 @@ final public class InitHandler extends BaseInitHandler {
 	private void startBundle(String symbolicName) {
 		try {
 			long start = System.currentTimeMillis();
-			JavaLanguageServerPlugin.logInfo("Starting " + symbolicName);
+			JavaLanguageServerPlugin.debugTrace("Starting " + symbolicName);
 			Platform.getBundle(symbolicName).start(Bundle.START_TRANSIENT);
 			JavaLanguageServerPlugin.logInfo("Started " + symbolicName + " " + (System.currentTimeMillis() - start) + "ms");
 		} catch (BundleException e) {

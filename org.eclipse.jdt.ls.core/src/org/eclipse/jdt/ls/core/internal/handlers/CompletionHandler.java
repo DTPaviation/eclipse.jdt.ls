@@ -18,6 +18,7 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 import org.apache.commons.lang3.StringUtils;
@@ -50,6 +51,7 @@ import org.eclipse.jdt.ls.core.internal.preferences.PreferenceManager;
 import org.eclipse.jdt.ls.core.internal.syntaxserver.ModelBasedCompletionEngine;
 import org.eclipse.lsp4j.Command;
 import org.eclipse.lsp4j.CompletionItem;
+import org.eclipse.lsp4j.CompletionItemOptions;
 import org.eclipse.lsp4j.CompletionList;
 import org.eclipse.lsp4j.CompletionOptions;
 import org.eclipse.lsp4j.CompletionParams;
@@ -60,7 +62,16 @@ import com.google.common.collect.Sets;
 
 public class CompletionHandler{
 
-	public final static CompletionOptions DEFAULT_COMPLETION_OPTIONS = new CompletionOptions(Boolean.TRUE, Arrays.asList(".", "@", "#", "*", " "));
+	public final static CompletionOptions getDefaultCompletionOptions(PreferenceManager preferenceManager) {
+		CompletionOptions completionOptions = new CompletionOptions(Boolean.TRUE, Arrays.asList(".", "@", "#", "*", " "));
+		if (preferenceManager.getClientPreferences().isCompletionItemLabelDetailsSupport()) {
+			CompletionItemOptions completionItemOptions = new CompletionItemOptions();
+			completionItemOptions.setLabelDetailsSupport(Boolean.TRUE);
+			completionOptions.setCompletionItem(completionItemOptions);
+		}
+		return completionOptions;
+	}
+
 	private static final Set<String> UNSUPPORTED_RESOURCES = Sets.newHashSet("module-info.java", "package-info.java");
 
 	static final Comparator<CompletionItem> PROPOSAL_COMPARATOR = new Comparator<>() {
@@ -111,6 +122,7 @@ public class CompletionHandler{
 			JavaLanguageServerPlugin.logInfo("Completion request completed");
 		}
 		long executionTime = System.currentTimeMillis() - startTime;
+		String lastRequestId = null;
 		for (CompletionItem item : $.getItems()) {
 			String requestId = "";
 			String proposalId = "";
@@ -118,19 +130,36 @@ public class CompletionHandler{
 			if (data != null) {
 				requestId = data.getOrDefault(CompletionResolveHandler.DATA_FIELD_REQUEST_ID, "");
 				proposalId = data.getOrDefault(CompletionResolveHandler.DATA_FIELD_PROPOSAL_ID, "");
-				data.put(CompletionRanking.COMPLETION_EXECUTION_TIME, String.valueOf(executionTime));
+			}
+			if (requestId.isEmpty() || proposalId.isEmpty()) {
+				continue;
 			}
 			item.setCommand(new Command("", "java.completion.onDidSelect", Arrays.asList(
 					requestId,
 					proposalId
 			)));
+
+			if (Objects.equals(requestId, lastRequestId)) {
+				continue;
+			}
+			lastRequestId = requestId;
+			int pId = Integer.parseInt(proposalId);
+			long rId = Long.parseLong(requestId);
+			CompletionResponse completionResponse = CompletionResponses.get(rId);
+			if (completionResponse == null || completionResponse.getProposals().size() <= pId) {
+				JavaLanguageServerPlugin.logError("Failed to save common data for completion items.");
+				continue;
+			}
+			completionResponse.setCommonData(CompletionRanking.COMPLETION_EXECUTION_TIME, String.valueOf(executionTime));
 		}
 		return Either.forRight($);
 	}
 
 	public void onDidCompletionItemSelect(String requestId, String proposalId) throws CoreException {
 		triggerSignatureHelp();
-
+		if (proposalId.isEmpty() || requestId.isEmpty()) {
+			return;
+		}
 		int pId = Integer.parseInt(proposalId);
 		long rId = Long.parseLong(requestId);
 		CompletionResponse completionResponse = CompletionResponses.get(rId);
@@ -141,6 +170,17 @@ public class CompletionHandler{
 		CompletionItem item = completionResponse.getItems().get(pId);
 		if (item == null) {
 			throw ExceptionFactory.newException("Cannot get the completion item.");
+		}
+
+		// get the cached completion execution time and set it to the selected item in case that providers need it.
+		String executionTime = completionResponse.getCommonData(CompletionRanking.COMPLETION_EXECUTION_TIME);
+		if (executionTime != null) {
+			((Map<String, String>)item.getData()).put(CompletionRanking.COMPLETION_EXECUTION_TIME, executionTime);
+		}
+
+		Map<String, String> contributedData = completionResponse.getCompletionItemData(pId);
+		if (contributedData != null) {
+			((Map<String, String>)item.getData()).putAll(contributedData);
 		}
 
 		List<ICompletionRankingProvider> providers =
@@ -221,7 +261,7 @@ public class CompletionHandler{
 					}
 					proposals.addAll(collector.getCompletionItems());
 					if (isSnippetStringSupported() && !UNSUPPORTED_RESOURCES.contains(unit.getResource().getName())) {
-						proposals.addAll(SnippetCompletionProposal.getSnippets(unit, collector.getContext(), subMonitor));
+						proposals.addAll(SnippetCompletionProposal.getSnippets(unit, collector, subMonitor));
 					}
 					proposals.addAll(new JavadocCompletionProposal().getProposals(unit, offset, collector, subMonitor));
 				} catch (OperationCanceledException e) {
@@ -232,6 +272,9 @@ public class CompletionHandler{
 		proposals.sort(PROPOSAL_COMPARATOR);
 		CompletionList list = new CompletionList(proposals);
 		list.setIsIncomplete(!collector.isComplete() || completionForConstructor);
+		if (this.manager.getClientPreferences().isCompletionListItemDefaultsSupport()){
+			list.setItemDefaults(collector.getCompletionItemDefaults());
+		}
 		return list;
 	}
 

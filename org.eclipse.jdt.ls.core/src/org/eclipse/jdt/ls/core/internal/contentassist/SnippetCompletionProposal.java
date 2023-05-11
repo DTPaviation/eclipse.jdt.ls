@@ -69,8 +69,13 @@ import org.eclipse.jface.text.templates.Template;
 import org.eclipse.jface.text.templates.TemplateBuffer;
 import org.eclipse.jface.text.templates.TemplateException;
 import org.eclipse.lsp4j.CompletionItem;
+import org.eclipse.lsp4j.CompletionItemDefaults;
 import org.eclipse.lsp4j.CompletionItemKind;
+import org.eclipse.lsp4j.CompletionItemLabelDetails;
 import org.eclipse.lsp4j.InsertTextFormat;
+import org.eclipse.lsp4j.Range;
+import org.eclipse.lsp4j.TextEdit;
+import org.eclipse.lsp4j.jsonrpc.messages.Either;
 
 public class SnippetCompletionProposal extends CompletionProposal {
 	private static final String CLASS_SNIPPET_LABEL = "class";
@@ -155,7 +160,7 @@ public class SnippetCompletionProposal extends CompletionProposal {
 						}
 						if (node instanceof CompletionOnSingleNameReference) {
 							CompilationUnit ast = CoreASTProvider.getInstance().getAST(cu, CoreASTProvider.WAIT_YES, null);
-							if (monitor.isCanceled()) {
+							if (ast == null || monitor.isCanceled()) {
 								return false;
 							}
 							org.eclipse.jdt.core.dom.ASTNode astNode = ASTNodeSearchUtil.getAstNode(ast, completionContext.getOffset(), 1);
@@ -198,16 +203,17 @@ public class SnippetCompletionProposal extends CompletionProposal {
 
 	}
 
-	public static List<CompletionItem> getSnippets(ICompilationUnit cu, CompletionContext completionContext, IProgressMonitor monitor) throws JavaModelException {
+	public static List<CompletionItem> getSnippets(ICompilationUnit cu, CompletionProposalRequestor collector, IProgressMonitor monitor) throws JavaModelException {
+		CompletionContext completionContext = collector.getContext();
 		if (cu == null) {
 			throw new IllegalArgumentException("Compilation unit must not be null"); //$NON-NLS-1$
 		}
 
 		List<CompletionItem> res = new ArrayList<>();
 		SnippetCompletionContext scc = new SnippetCompletionContext(cu, completionContext);
-		res.addAll(getGenericSnippets(scc));
-		res.addAll(getTypeDefinitionSnippets(scc, monitor));
-		res.addAll(getPostfixSnippets(scc));
+		res.addAll(getGenericSnippets(scc, collector.getCompletionItemDefaults()));
+		res.addAll(getTypeDefinitionSnippets(scc, monitor, collector.getCompletionItemDefaults()));
+		res.addAll(getPostfixSnippets(scc, collector.getCompletionItemDefaults()));
 
 		return res;
 	}
@@ -216,7 +222,7 @@ public class SnippetCompletionProposal extends CompletionProposal {
 	 * Return the list of postfix completion items.
 	 * @param scc Snippet completion context.
 	 */
-	private static List<CompletionItem> getPostfixSnippets(SnippetCompletionContext scc) {
+	private static List<CompletionItem> getPostfixSnippets(SnippetCompletionContext scc, CompletionItemDefaults completionItemDefaults) {
 		if (!isPostfixSupported()) {
 			return Collections.emptyList();
 		}
@@ -228,10 +234,10 @@ public class SnippetCompletionProposal extends CompletionProposal {
 				PostfixCompletionProposalComputer computer = new PostfixCompletionProposalComputer();
 				PostfixTemplateEngine engine = computer.computeCompletionEngine(jdtCtx, document, jdtCtx.getOffset());
 				if (engine != null) {
-					return engine.complete(document, jdtCtx.getOffset(), scc.getCompilationUnit());
+					return engine.complete(document, jdtCtx.getOffset(), scc.getCompilationUnit(), completionItemDefaults);
 				}
 			}
-		} catch (BadLocationException | JavaModelException e) {
+		} catch (Exception e) {
 			JavaLanguageServerPlugin.logException(e.getMessage(), e);
 		}
 		return Collections.emptyList();
@@ -269,7 +275,7 @@ public class SnippetCompletionProposal extends CompletionProposal {
 		return Arrays.stream(templates).anyMatch(t -> t.getName().toLowerCase().startsWith((new String(token)).toLowerCase()));
 	}
 
-	private static List<CompletionItem> getGenericSnippets(SnippetCompletionContext scc) throws JavaModelException {
+	private static List<CompletionItem> getGenericSnippets(SnippetCompletionContext scc, CompletionItemDefaults completionItemDefaults) throws JavaModelException {
 		CompletionResponse response = new CompletionResponse();
 		response.setContext(scc.getCompletionContext());
 		response.setOffset(scc.getCompletionContext().getOffset());
@@ -307,12 +313,40 @@ public class SnippetCompletionProposal extends CompletionProposal {
 			final CompletionItem item = new CompletionItem();
 			item.setLabel(template.getName());
 			item.setKind(CompletionItemKind.Snippet);
-			item.setInsertTextFormat(InsertTextFormat.Snippet);
-			item.setInsertText(SnippetUtils.templateToSnippet(template.getPattern()));
-			item.setDetail(template.getDescription());
 
-			Map<String, String> data = new HashMap<>(3);
-			data.put(CompletionResolveHandler.DATA_FIELD_URI, uri);
+			if (isCompletionListItemDefaultsSupport() &&
+				completionItemDefaults.getInsertTextFormat() != null &&
+				completionItemDefaults.getInsertTextFormat() == InsertTextFormat.Snippet
+			) {
+				item.setInsertTextFormat(null);
+			} else {
+				item.setInsertTextFormat(InsertTextFormat.Snippet);
+			}
+
+			if (isCompletionLazyResolveTextEditEnabled()) {
+				String insertText = SnippetUtils.templateToSnippet(template.getPattern());
+				if (isCompletionListItemDefaultsSupport() && completionItemDefaults.getEditRange() != null) {
+					item.setTextEditText(insertText);
+				} else {
+					item.setInsertText(insertText);
+				}
+			} else {
+				String content = SnippetCompletionProposal.evaluateGenericTemplate(cu, completionContext, template);
+				if (isCompletionListItemDefaultsSupport() && completionItemDefaults.getEditRange() != null) {
+					item.setTextEditText(content);
+				} else {
+					setTextEdit(completionContext, cu, item, content);
+				}
+			}
+
+			item.setDetail(template.getDescription());
+			if (isCompletionItemLabelDetailsSupport()){
+				CompletionItemLabelDetails itemLabelDetails = new CompletionItemLabelDetails();
+				itemLabelDetails.setDescription(template.getDescription());
+				item.setLabelDetails(itemLabelDetails);
+			}
+
+			Map<String, String> data = new HashMap<>(2);
 			data.put(CompletionResolveHandler.DATA_FIELD_REQUEST_ID, String.valueOf(response.getId()));
 			data.put(CompletionResolveHandler.DATA_FIELD_PROPOSAL_ID, String.valueOf(i));
 			item.setData(data);
@@ -323,8 +357,28 @@ public class SnippetCompletionProposal extends CompletionProposal {
 
 		response.setProposals(proposals);
 		response.setItems(res);
+		response.setCommonData(CompletionResolveHandler.DATA_FIELD_URI, uri);
 		CompletionResponses.store(response);
 		return res;
+	}
+
+	/**
+	 * Set the text edit for the completion item.
+	 * @param completionContext the completion context
+	 * @param cu the compilation unit
+	 * @param item the completion item
+	 * @param content the new text of the text edit
+	 * @throws JavaModelException
+	 */
+	public static void setTextEdit(CompletionContext completionContext, ICompilationUnit cu, final CompletionItem item, String content) throws JavaModelException {
+		int length = completionContext.getTokenEnd() - completionContext.getTokenStart() + 1;
+		Range range = JDTUtils.toRange(cu, completionContext.getTokenStart(), length);
+		TextEdit textEdit = new TextEdit(range, content);
+		item.setTextEdit(Either.forLeft(textEdit));
+	}
+
+	private static boolean isCompletionItemLabelDetailsSupport() {
+		return JavaLanguageServerPlugin.getPreferencesManager() != null && JavaLanguageServerPlugin.getPreferencesManager().getClientPreferences().isCompletionItemLabelDetailsSupport();
 	}
 
 	public static String evaluateGenericTemplate(ICompilationUnit cu, CompletionContext completionContext, Template template) {
@@ -353,7 +407,7 @@ public class SnippetCompletionProposal extends CompletionProposal {
 		return content;
 	}
 
-	private static List<CompletionItem> getTypeDefinitionSnippets(SnippetCompletionContext scc, IProgressMonitor monitor) throws JavaModelException {
+	private static List<CompletionItem> getTypeDefinitionSnippets(SnippetCompletionContext scc, IProgressMonitor monitor, CompletionItemDefaults completionItemDefaults) throws JavaModelException {
 		char[] completionToken = scc.getCompletionContext().getToken();
 		boolean isInterfacePrefix = true;
 		boolean isClassPrefix = true;
@@ -394,7 +448,7 @@ public class SnippetCompletionProposal extends CompletionProposal {
 		}
 
 		for (CompletionItem item : res) {
-			setFields(item, scc.getCompilationUnit());
+			setFields(item, scc.getCompilationUnit(), completionItemDefaults);
 		}
 		return res;
 	}
@@ -415,6 +469,9 @@ public class SnippetCompletionProposal extends CompletionProposal {
 				if (acceptClass && node instanceof CompletionOnSingleNameReference) {
 					if (completionContext.getEnclosingElement() instanceof IMethod) {
 						CompilationUnit ast = CoreASTProvider.getInstance().getAST(cu, CoreASTProvider.WAIT_YES, null);
+						if (ast == null) {
+							return true;
+						}
 						org.eclipse.jdt.core.dom.ASTNode astNode = ASTNodeSearchUtil.getAstNode(ast, completionContext.getTokenStart(), completionContext.getTokenEnd() - completionContext.getTokenStart() + 1);
 						return (astNode == null || (astNode.getParent() instanceof ExpressionStatement));
 					}
@@ -441,6 +498,9 @@ public class SnippetCompletionProposal extends CompletionProposal {
 		try {
 			CodeGenerationTemplate template = (scc.needsPublic(monitor)) ? CodeGenerationTemplate.CLASSSNIPPET_PUBLIC : CodeGenerationTemplate.CLASSSNIPPET_DEFAULT;
 			classSnippetItem.setInsertText(getSnippetContent(scc, template, true));
+			if (isCompletionListItemDefaultsSupport()) {
+				classSnippetItem.setTextEditText(getSnippetContent(scc, template, true));
+			}
 		} catch (CoreException e) {
 			JavaLanguageServerPlugin.log(e.getStatus());
 			return null;
@@ -464,6 +524,9 @@ public class SnippetCompletionProposal extends CompletionProposal {
 		try {
 			CodeGenerationTemplate template = ((scc.needsPublic(monitor))) ? CodeGenerationTemplate.INTERFACESNIPPET_PUBLIC : CodeGenerationTemplate.INTERFACESNIPPET_DEFAULT;
 			interfaceSnippetItem.setInsertText(getSnippetContent(scc, template, true));
+			if (isCompletionListItemDefaultsSupport()) {
+				interfaceSnippetItem.setTextEditText(getSnippetContent(scc, template, true));
+			}
 		} catch (CoreException e) {
 			JavaLanguageServerPlugin.log(e.getStatus());
 			return null;
@@ -496,6 +559,9 @@ public class SnippetCompletionProposal extends CompletionProposal {
 		try {
 			CodeGenerationTemplate template = (scc.needsPublic(monitor)) ? CodeGenerationTemplate.RECORDSNIPPET_PUBLIC : CodeGenerationTemplate.RECORDSNIPPET_DEFAULT;
 			recordSnippet.setInsertText(getSnippetContent(scc, template, true));
+			if (isCompletionListItemDefaultsSupport()) {
+				recordSnippet.setTextEditText(getSnippetContent(scc, template, true));
+			}
 		} catch (CoreException e) {
 			JavaLanguageServerPlugin.log(e.getStatus());
 			return null;
@@ -503,9 +569,12 @@ public class SnippetCompletionProposal extends CompletionProposal {
 		return recordSnippet;
 	}
 
-	private static void setFields(CompletionItem ci, ICompilationUnit cu) {
+	private static void setFields(CompletionItem ci, ICompilationUnit cu, CompletionItemDefaults completionItemDefaults) {
 		ci.setKind(CompletionItemKind.Snippet);
 		ci.setInsertTextFormat(InsertTextFormat.Snippet);
+		if (completionItemDefaults.getInsertTextFormat() != null && completionItemDefaults.getInsertTextFormat() == InsertTextFormat.Snippet){
+			ci.setInsertTextFormat(null);
+		}
 		ci.setDocumentation(SnippetUtils.beautifyDocument(ci.getInsertText()));
 	}
 
@@ -553,5 +622,13 @@ public class SnippetCompletionProposal extends CompletionProposal {
 
 	private static Predicate<IType> isTypeExists(String typeName) {
 		return type -> type.getElementName().equals(typeName);
+	}
+
+	private static boolean isCompletionListItemDefaultsSupport() {
+		return JavaLanguageServerPlugin.getPreferencesManager().getClientPreferences().isCompletionListItemDefaultsSupport();
+	}
+	
+	private static boolean isCompletionLazyResolveTextEditEnabled() {
+		return JavaLanguageServerPlugin.getPreferencesManager().getPreferences().isCompletionLazyResolveTextEditEnabled();
 	}
 }

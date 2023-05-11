@@ -6,7 +6,7 @@
 	<parent>
 		<groupId>org.eclipse.jdt.ls</groupId>
 		<artifactId>parent</artifactId>
-		<version>1.20.0-SNAPSHOT</version>
+		<version>1.24.0-SNAPSHOT</version>
 	</parent>
 	<artifactId>org.eclipse.jdt.ls.tests</artifactId>
 	<name>${base.name} :: Tests</name>
@@ -69,7 +69,7 @@
 				</os>
 			</activation>
 			<properties>
-				<os.testArgs>-XstartOnFirstThread -noverify</os.testArgs>
+				<os.testArgs>-XstartOnFirstThread</os.testArgs>
 			</properties>
 			<build>
 				<pluginManagement>

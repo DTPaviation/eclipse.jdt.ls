@@ -338,6 +338,18 @@ public class MavenProjectImporterTest extends AbstractMavenBasedTest {
 		IJavaProject javaProject = JavaCore.create(project);
 		assertEquals(JavaCore.ENABLED, javaProject.getOption(JavaCore.COMPILER_PB_ENABLE_PREVIEW_FEATURES, false));
 		assertEquals(JavaCore.IGNORE, javaProject.getOption(JavaCore.COMPILER_PB_REPORT_PREVIEW_FEATURES, false));
+		assertHasErrors(project, "Preview features enabled at an invalid source release level");
+		// assertNoErrors(project);
+	}
+
+	@Test
+	public void testJava20Project() throws Exception {
+		IProject project = importMavenProject("salut-java20");
+		assertIsJavaProject(project);
+		assertEquals("20", getJavaSourceLevel(project));
+		IJavaProject javaProject = JavaCore.create(project);
+		assertEquals(JavaCore.ENABLED, javaProject.getOption(JavaCore.COMPILER_PB_ENABLE_PREVIEW_FEATURES, false));
+		assertEquals(JavaCore.IGNORE, javaProject.getOption(JavaCore.COMPILER_PB_REPORT_PREVIEW_FEATURES, false));
 		assertNoErrors(project);
 	}
 
@@ -390,6 +402,18 @@ public class MavenProjectImporterTest extends AbstractMavenBasedTest {
 			this.preferenceManager.getPreferences().setNullAnalysisMode(FeatureStatus.disabled);
 			this.preferenceManager.getPreferences().updateAnnotationNullAnalysisOptions();
 		}
+	}
+
+	// https://github.com/eclipse/eclipse.jdt.ls/issues/2017
+	@Test
+	public void testImportModulesWithSameArtifactId() throws Exception {
+		importProjects("maven/multimodule-same-artifacts");
+		IProject[] projects = ProjectUtils.getAllProjects(false);
+		assertEquals(4, projects.length); // three projects & parent module
+		// See MavenProjectImporter.DUPLICATE_ARTIFACT_TEMPLATE
+		assertTrue(Arrays.stream(projects).anyMatch(p -> p.getName().equals("com.example.one-my-app")));
+		assertTrue(Arrays.stream(projects).anyMatch(p -> p.getName().equals("com.example.two-my-app")));
+		assertTrue(Arrays.stream(projects).anyMatch(p -> p.getName().equals("com.example.three-my-app")));
 	}
 
 	private static class MavenUpdateProjectJobSpy extends JobChangeAdapter {

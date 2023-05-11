@@ -20,6 +20,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 import org.eclipse.core.resources.IFile;
@@ -92,22 +93,38 @@ public abstract class BaseDocumentLifeCycleHandler {
 	 */
 	private static final long DOCUMENT_LIFECYCLE_MAX_DEBOUNCE = 400; /*ms*/
 
+	/**
+	 * The min & init value of adaptive debounce time for publish diagnostic job.
+	 */
+	private static final long PUBLISH_DIAGNOSTICS_MIN_DEBOUNCE = 400; /*ms*/
+
+	/**
+	 * The max value of adaptive debounce time for publish diagnostic job.
+	 */
+	private static final long PUBLISH_DIAGNOSTICS_MAX_DEBOUNCE = 2000; /*ms*/
+
 	private CoreASTProvider sharedASTProvider;
 	private WorkspaceJob validationTimer;
 	private WorkspaceJob publishDiagnosticsJob;
 	private Set<ICompilationUnit> toReconcile = new HashSet<>();
 	private Map<String, Integer> documentVersions = new HashMap<>();
-	private MovingAverage movingAverage = new MovingAverage(DOCUMENT_LIFECYCLE_MAX_DEBOUNCE);
+	private MovingAverage movingAverageForValidation = new MovingAverage(DOCUMENT_LIFECYCLE_MAX_DEBOUNCE);
+	private MovingAverage movingAverageForDiagnostics = new MovingAverage(PUBLISH_DIAGNOSTICS_MIN_DEBOUNCE);
+	protected final PreferenceManager preferenceManager;
 
-	public BaseDocumentLifeCycleHandler(boolean delayValidation) {
+	public BaseDocumentLifeCycleHandler(PreferenceManager preferenceManager, boolean delayValidation) {
+		this.preferenceManager = preferenceManager;
 		this.sharedASTProvider = CoreASTProvider.getInstance();
 		if (delayValidation) {
 			this.validationTimer = new WorkspaceJob("Validate documents") {
 				@Override
 				public IStatus runInWorkspace(IProgressMonitor monitor) throws CoreException {
-					long start = System.currentTimeMillis();
+					long startTime = System.nanoTime();
 					IStatus status = performValidation(monitor);
-					movingAverage.update(System.currentTimeMillis() - start);
+					if (status.getSeverity() != IStatus.CANCEL) {
+						long elapsedTime = System.nanoTime() - startTime;
+						movingAverageForValidation.update(elapsedTime / 1_000_000);
+					}
 					return status;
 				}
 
@@ -156,7 +173,18 @@ public abstract class BaseDocumentLifeCycleHandler {
 	}
 
 	private long getDocumentLifecycleDelay() {
-		return Math.min(DOCUMENT_LIFECYCLE_MAX_DEBOUNCE, Math.round(1.5 * movingAverage.value));
+		return Math.min(DOCUMENT_LIFECYCLE_MAX_DEBOUNCE, Math.round(1.5 * movingAverageForValidation.value));
+	}
+
+	/**
+	 * @return the delay time of the publish diagnostics job. The value ranges in
+	 * ({@link #PUBLISH_DIAGNOSTICS_MIN_DEBOUNCE}, {@link #PUBLISH_DIAGNOSTICS_MAX_DEBOUNCE}) ms.
+	 */
+	private long getPublishDiagnosticsDelay() {
+		return Math.min(
+			Math.max(PUBLISH_DIAGNOSTICS_MIN_DEBOUNCE, Math.round(1.5 * movingAverageForDiagnostics.value)),
+			PUBLISH_DIAGNOSTICS_MAX_DEBOUNCE
+		);
 	}
 
 	private ISchedulingRule getRule(Set<ICompilationUnit> units) {
@@ -209,14 +237,14 @@ public abstract class BaseDocumentLifeCycleHandler {
 			if (monitor.isCanceled()) {
 				return Status.CANCEL_STATUS;
 			}
-			publishDiagnosticsJob.schedule(400);
+			publishDiagnosticsJob.schedule(getPublishDiagnosticsDelay());
 		} else {
 			return publishDiagnostics(new NullProgressMonitor());
 		}
 		return Status.OK_STATUS;
 	}
 
-	private IStatus publishDiagnostics(IProgressMonitor monitor) throws JavaModelException {
+	public IStatus publishDiagnostics(IProgressMonitor monitor) throws JavaModelException {
 		long start = System.currentTimeMillis();
 		if (monitor.isCanceled()) {
 			return Status.CANCEL_STATUS;
@@ -234,15 +262,7 @@ public abstract class BaseDocumentLifeCycleHandler {
 			if (monitor.isCanceled()) {
 				return Status.CANCEL_STATUS;
 			}
-			CompilationUnit astRoot = this.sharedASTProvider.getAST(rootToValidate, CoreASTProvider.WAIT_YES, monitor);
-			if (monitor.isCanceled()) {
-				return Status.CANCEL_STATUS;
-			}
-			if (astRoot != null) {
-				// report errors, even if there are no problems in the file: The client need to know that they got fixed.
-				ICompilationUnit unit = (ICompilationUnit) astRoot.getTypeRoot();
-				publishDiagnostics(unit, progress.newChild(1));
-			}
+			publishDiagnostics(rootToValidate, progress.newChild(1));
 		}
 		JavaLanguageServerPlugin.logInfo("Validated " + toValidate.size() + ". Took " + (System.currentTimeMillis() - start) + " ms");
 		return Status.OK_STATUS;
@@ -282,61 +302,52 @@ public abstract class BaseDocumentLifeCycleHandler {
 
 	public void didClose(DidCloseTextDocumentParams params) {
 		documentVersions.remove(params.getTextDocument().getUri());
-		ISchedulingRule rule = JDTUtils.getRule(params.getTextDocument().getUri());
-		try {
-			ResourcesPlugin.getWorkspace().run(new IWorkspaceRunnable() {
-				@Override
-				public void run(IProgressMonitor monitor) throws CoreException {
-					handleClosed(params);
-				}
-			}, rule, IWorkspace.AVOID_UPDATE, new NullProgressMonitor());
-		} catch (CoreException e) {
-			JavaLanguageServerPlugin.logException("Handle document close ", e);
-		}
+		handleClosed(params);
 	}
 
 	public void didOpen(DidOpenTextDocumentParams params) {
-		documentVersions.put(params.getTextDocument().getUri(), params.getTextDocument().getVersion());
-		ISchedulingRule rule = JDTUtils.getRule(params.getTextDocument().getUri());
-		try {
-			ResourcesPlugin.getWorkspace().run(new IWorkspaceRunnable() {
-				@Override
-				public void run(IProgressMonitor monitor) throws CoreException {
-					handleOpen(params);
-				}
-			}, rule, IWorkspace.AVOID_UPDATE, new NullProgressMonitor());
-		} catch (CoreException e) {
-			JavaLanguageServerPlugin.logException("Handle document open ", e);
+		String uri = params.getTextDocument().getUri();
+		documentVersions.put(uri, params.getTextDocument().getVersion());
+		IFile resource = JDTUtils.findFile(uri);
+		if (resource != null) { // Open a managed file from the existing projects.
+			handleOpen(params);
+		} else { // Open an unmanaged file, use a workspace runnable to mount it to default project or invisible project.
+			try {
+				ResourcesPlugin.getWorkspace().run(new IWorkspaceRunnable() {
+					@Override
+					public void run(IProgressMonitor monitor) throws CoreException {
+						handleOpen(params);
+					}
+				}, null, IWorkspace.AVOID_UPDATE, new NullProgressMonitor());
+			} catch (CoreException e) {
+				JavaLanguageServerPlugin.logException("Handle document open ", e);
+			}
 		}
 	}
 
 	public void didChange(DidChangeTextDocumentParams params) {
 		documentVersions.put(params.getTextDocument().getUri(), params.getTextDocument().getVersion());
-		ISchedulingRule rule = JDTUtils.getRule(params.getTextDocument().getUri());
-		try {
-			ResourcesPlugin.getWorkspace().run(new IWorkspaceRunnable() {
-				@Override
-				public void run(IProgressMonitor monitor) throws CoreException {
-					handleChanged(params);
-				}
-			}, rule, IWorkspace.AVOID_UPDATE, new NullProgressMonitor());
-		} catch (CoreException e) {
-			JavaLanguageServerPlugin.logException("Handle document change ", e);
-		}
+		handleChanged(params);
 	}
 
 	public void didSave(DidSaveTextDocumentParams params) {
-		ISchedulingRule rule = JDTUtils.getRule(params.getTextDocument().getUri());
-		try {
-			JobHelpers.waitForJobs(DocumentLifeCycleHandler.DOCUMENT_LIFE_CYCLE_JOBS, new NullProgressMonitor());
-			ResourcesPlugin.getWorkspace().run(new IWorkspaceRunnable() {
-				@Override
-				public void run(IProgressMonitor monitor) throws CoreException {
-					handleSaved(params);
-				}
-			}, rule, IWorkspace.AVOID_UPDATE, new NullProgressMonitor());
-		} catch (CoreException e) {
-			JavaLanguageServerPlugin.logException("Handle document save ", e);
+		IFile file = JDTUtils.findFile(params.getTextDocument().getUri());
+		if (file != null && !Objects.equals(ProjectsManager.getDefaultProject(), file.getProject())) {
+			// no need for a workspace runnable, change is trivial
+			handleSaved(params);
+		} else {
+			// some refactorings may be applied by the way, wrap those in a WorkspaceRunnable
+			try {
+				JobHelpers.waitForJobs(DocumentLifeCycleHandler.DOCUMENT_LIFE_CYCLE_JOBS, new NullProgressMonitor());
+				ResourcesPlugin.getWorkspace().run(new IWorkspaceRunnable() {
+					@Override
+					public void run(IProgressMonitor monitor) throws CoreException {
+						handleSaved(params);
+					}
+				}, null, IWorkspace.AVOID_UPDATE, new NullProgressMonitor());
+			} catch (CoreException e) {
+				JavaLanguageServerPlugin.logException("Handle document save ", e);
+			}
 		}
 	}
 
@@ -397,34 +408,36 @@ public abstract class BaseDocumentLifeCycleHandler {
 				sharedASTProvider.disposeAST();
 				CodeActionHandler.codeActionStore.clear();
 			}
-			List<TextDocumentContentChangeEvent> contentChanges = params.getContentChanges();
-			for (TextDocumentContentChangeEvent changeEvent : contentChanges) {
 
-				Range range = changeEvent.getRange();
-				int length;
-				IDocument document = JsonRpcHelpers.toDocument(unit.getBuffer());
-				final int startOffset;
-				if (range != null) {
-					Position start = range.getStart();
-					startOffset = JsonRpcHelpers.toOffset(document, start.getLine(), start.getCharacter());
-					length = DiagnosticsHelper.getLength(unit, range);
-				} else {
-					// range is optional and if not given, the whole file content is replaced
-					length = unit.getSource().length();
-					startOffset = 0;
+			if (!preferenceManager.getClientPreferences().skipTextEventPropagation()) {
+				List<TextDocumentContentChangeEvent> contentChanges = params.getContentChanges();
+				for (TextDocumentContentChangeEvent changeEvent : contentChanges) {
+
+					Range range = changeEvent.getRange();
+					int length;
+					IDocument document = JsonRpcHelpers.toDocument(unit.getBuffer());
+					final int startOffset;
+					if (range != null) {
+						Position start = range.getStart();
+						startOffset = JsonRpcHelpers.toOffset(document, start.getLine(), start.getCharacter());
+						length = DiagnosticsHelper.getLength(unit, range);
+					} else {
+						// range is optional and if not given, the whole file content is replaced
+						length = unit.getSource().length();
+						startOffset = 0;
+					}
+
+					TextEdit edit = null;
+					String text = changeEvent.getText();
+					if (length == 0) {
+						edit = new InsertEdit(startOffset, text);
+					} else if (text.isEmpty()) {
+						edit = new DeleteEdit(startOffset, length);
+					} else {
+						edit = new ReplaceEdit(startOffset, length, text);
+					}
+					edit.apply(document, TextEdit.NONE);
 				}
-
-				TextEdit edit = null;
-				String text = changeEvent.getText();
-				if (length == 0) {
-					edit = new InsertEdit(startOffset, text);
-				} else if (text.isEmpty()) {
-					edit = new DeleteEdit(startOffset, length);
-				} else {
-					edit = new ReplaceEdit(startOffset, length, text);
-				}
-				edit.apply(document, TextEdit.NONE);
-
 			}
 			triggerValidation(unit);
 		} catch (JavaModelException | MalformedTreeException | BadLocationException e) {
@@ -508,6 +521,9 @@ public abstract class BaseDocumentLifeCycleHandler {
 		if (unit.getResource() != null && unit.getJavaProject() != null && unit.getJavaProject().getProject().getName().equals(ProjectsManager.DEFAULT_PROJECT_NAME)) {
 			try {
 				CompilationUnit astRoot = CoreASTProvider.getInstance().getAST(unit, CoreASTProvider.WAIT_YES, new NullProgressMonitor());
+				if (astRoot == null) {
+					return unit;
+				}
 				IProblem[] problems = astRoot.getProblems();
 				for (IProblem problem : problems) {
 					if (problem.getID() == IProblem.PackageIsNotExpectedPackage) {
@@ -594,6 +610,9 @@ public abstract class BaseDocumentLifeCycleHandler {
 	private boolean needInferSourceRoot(IJavaProject javaProject, ICompilationUnit unit) {
 		if (javaProject.isOnClasspath(unit)) {
 			CompilationUnit astRoot = CoreASTProvider.getInstance().getAST(unit, CoreASTProvider.WAIT_YES, new NullProgressMonitor());
+			if (astRoot == null) {
+				return false;
+			}
 			IProblem[] problems = astRoot.getProblems();
 			boolean isPackageNotMatch = Arrays.stream(problems)
 					.anyMatch(p -> p.getID() == IProblem.PackageIsNotExpectedPackage);
@@ -652,7 +671,13 @@ public abstract class BaseDocumentLifeCycleHandler {
 
 		@Override
 		public IStatus runInWorkspace(IProgressMonitor monitor) throws CoreException {
-			return publishDiagnostics(monitor);
+			long startTime = System.nanoTime();
+			IStatus status = publishDiagnostics(monitor);
+			if (status.getSeverity() != IStatus.CANCEL) {
+				long elapsedTime = System.nanoTime() - startTime;
+				movingAverageForDiagnostics.update(elapsedTime / 1_000_000);
+			}
+			return status;
 		}
 
 		/* (non-Javadoc)
