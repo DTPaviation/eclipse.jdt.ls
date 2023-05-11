@@ -7,7 +7,7 @@ pipeline {
           env.flag = '0'
           properties([
             parameters([
-            string(name: 'BRANCH_NAME', defaultValue: 'monaco-lsp-server/jdt_ls_build', description: 'JOB_NAME/BRANCH_NAME'),
+            string(name: 'BRANCH_NAME', defaultValue: 'eclipse.jdt.ls/master', description: 'JOB_NAME/BRANCH_NAME'),
             booleanParam(name: 'BUILD_AND_DEPLOY_NEW_LSP_SERVER', defaultValue: true, description: 'BUILD AND DEPLOY NEW_LSP IMAGE'),
             booleanParam(name: 'CHECK_LATEST_PIPELINE', defaultValue: false, description: 'CHECK_LATEST_PIPELINE'),            
             string(name: 'PREFIX', defaultValue: 'LSP_SERVER', description: 'PREFIX'),
