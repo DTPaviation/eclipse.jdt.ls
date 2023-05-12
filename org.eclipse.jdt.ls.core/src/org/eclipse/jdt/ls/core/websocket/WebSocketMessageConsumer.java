@@ -1,60 +1,56 @@
 package org.eclipse.jdt.ls.core.websocket;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.util.logging.Logger;
 
+import javax.websocket.RemoteEndpoint;
 import javax.websocket.Session;
 
-import org.eclipse.lsp4j.jsonrpc.JsonRpcException;
-import org.eclipse.lsp4j.jsonrpc.MessageConsumer;
+import org.eclipse.jetty.websocket.jsr356.JsrSession;
 import org.eclipse.lsp4j.jsonrpc.json.MessageJsonHandler;
+import org.eclipse.lsp4j.jsonrpc.json.StreamMessageConsumer;
 import org.eclipse.lsp4j.jsonrpc.messages.Message;
+import org.eclipse.xtext.xbase.lib.Exceptions;
+
 
 /**
- * Message consumer that sends messages via a WebSocket session.
+ * LSP4J message consumer that forwards messages to a web socket.
  */
-public class WebSocketMessageConsumer implements MessageConsumer {
+@SuppressWarnings("all")
+public class WebSocketMessageConsumer extends StreamMessageConsumer {
+  protected RemoteEndpoint.Async remote;
 
-	private static final Logger LOG = Logger.getLogger(WebSocketMessageConsumer.class.getName());
+	private Session webSocketSession;
 
-	private final Session session;
-	private final MessageJsonHandler jsonHandler;
+  public WebSocketMessageConsumer(final RemoteEndpoint.Async remote, final MessageJsonHandler jsonHandler) {
+    super(new ByteArrayOutputStream(), jsonHandler);
+    this.remote = remote;
+  }
 
-	public WebSocketMessageConsumer(Session session, MessageJsonHandler jsonHandler) {
-		this.session = session;
-		this.jsonHandler = jsonHandler;
-	}
+  public WebSocketMessageConsumer(final RemoteEndpoint.Async remote, final String encoding, final MessageJsonHandler jsonHandler) {
+    super(new ByteArrayOutputStream(), encoding, jsonHandler);
+    this.remote = remote;
+  }
 
-	public Session getSession() {
-		return session;
-	}
+	public WebSocketMessageConsumer(final Session webSocketSession, final MessageJsonHandler jsonHandler) {
+    super(new ByteArrayOutputStream(), jsonHandler);
+    this.webSocketSession = webSocketSession;
+  }
 
-	@Override
-	public void consume(Message message) {
-		String content = jsonHandler.serialize(message);
-		try {
-			sendMessage(content);
-		} catch (IOException exception) {
-			throw new JsonRpcException(exception);
-		}
-	}
-
-	protected void sendMessage(String message) throws IOException {
-		if (session.isOpen()) {
-			int length = message.length();
-			if (length <= session.getMaxTextMessageBufferSize()) {
-				session.getAsyncRemote().sendText(message);
-			} else {
-				int currentOffset = 0;
-				while (currentOffset < length) {
-					int currentEnd = Math.min(currentOffset + session.getMaxTextMessageBufferSize(), length);
-					session.getBasicRemote().sendText(message.substring(currentOffset, currentEnd), currentEnd == length);
-					currentOffset = currentEnd;
-				}
-			}
-		} else {
-			LOG.info("Ignoring message due to closed session: " + message);
-		}
-	}
-
+  @Override
+  public void consume(final Message message) {
+		super.consume(message);
+    try {
+      String content = message.toString();
+		//  TextMessage _textMessage = new TextMessage(content);
+		((JsrSession) this.webSocketSession).getBasicRemote().sendText(content);
+    } catch (final Throwable _t) {
+      if (_t instanceof IOException) {
+        final IOException e = (IOException)_t;
+        e.printStackTrace();
+      } else {
+        throw Exceptions.sneakyThrow(_t);
+      }
+    }
+  }
 }

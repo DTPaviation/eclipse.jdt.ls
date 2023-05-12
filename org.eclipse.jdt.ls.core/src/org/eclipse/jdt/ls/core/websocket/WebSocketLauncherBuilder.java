@@ -37,6 +37,8 @@ import org.eclipse.lsp4j.jsonrpc.json.MessageJsonHandler;
 import org.eclipse.lsp4j.jsonrpc.json.StreamMessageProducer;
 import org.eclipse.lsp4j.jsonrpc.services.ServiceEndpoints;
 import org.eclipse.lsp4j.jsonrpc.validation.ReflectiveMessageValidator;
+import org.eclipse.lsp4j.websocket.WebSocketMessageConsumer;
+import org.eclipse.lsp4j.websocket.WebSocketMessageHandler;
 
 /**
  * @author rabih

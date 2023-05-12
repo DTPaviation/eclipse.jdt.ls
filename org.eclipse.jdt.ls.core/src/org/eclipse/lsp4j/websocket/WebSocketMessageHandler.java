@@ -1,4 +1,4 @@
-package org.eclipse.jdt.ls.core.websocket;
+package org.eclipse.lsp4j.websocket;
 
 import javax.websocket.MessageHandler;
 
