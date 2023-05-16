@@ -12,6 +12,7 @@
  *******************************************************************************/
 package org.eclipse.jdt.ls.core.websocket;
 
+import java.io.IOException;
 import java.util.LinkedHashMap;
 import java.util.concurrent.CountDownLatch;
 
@@ -76,7 +77,7 @@ public class SocketHandler {
 
 
 		//ExecutorService executorService = Executors.newCachedThreadPool();
-		LanguageMessageHandler languageHandler = new LanguageMessageHandler(incomingMessageStream, serverEndpoint);
+		LanguageMessageHandler languageHandler = new LanguageMessageHandler(incomingMessageStream, serverEndpoint, protocol);
 
 		session.addMessageHandler(languageHandler);
 
@@ -105,8 +106,15 @@ public class SocketHandler {
 	}
 
 	@OnClose
-	public void onWebSocketClose(CloseReason reason) {
+	public void onWebSocketClose(CloseReason reason, Session session) throws IOException {
 		System.out.println("Socket Closed: " + reason);
+
+		for (MessageHandler handler : session.getMessageHandlers()) {
+
+			LanguageMessageHandler languageMsgHandler = ((LanguageMessageHandler) handler);
+			languageMsgHandler.getProtocol().disconnectClient();
+		}
+		session.close();
 		closureLatch.countDown();
 	}
 

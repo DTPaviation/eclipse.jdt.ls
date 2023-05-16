@@ -9,6 +9,7 @@ import java.util.List;
 
 import javax.websocket.MessageHandler;
 
+import org.eclipse.jdt.ls.core.internal.handlers.JDTLanguageServer;
 import org.eclipse.lsp4j.jsonrpc.MessageConsumer;
 import org.eclipse.lsp4j.jsonrpc.json.StreamMessageProducer;
 
@@ -88,12 +89,18 @@ public class LanguageMessageHandler implements MessageHandler.Partial<String> {
 
   private MessageConsumer serverEndpoint;
 
+	private JDTLanguageServer protocol;
   private List<byte[]> messages = new ArrayList<>();
 
-  public LanguageMessageHandler(final StreamMessageProducer messageProducer, final MessageConsumer serverEndpoint) {
+	public LanguageMessageHandler(final StreamMessageProducer messageProducer, final MessageConsumer serverEndpoint, JDTLanguageServer protocol) {
     this.messageProducer = messageProducer;
     this.serverEndpoint = serverEndpoint;
+	this.protocol = protocol;
   }
+
+	public JDTLanguageServer getProtocol() {
+		return protocol;
+	}
 
   @Override
   public void onMessage(final String partialMessage, final boolean last) {
