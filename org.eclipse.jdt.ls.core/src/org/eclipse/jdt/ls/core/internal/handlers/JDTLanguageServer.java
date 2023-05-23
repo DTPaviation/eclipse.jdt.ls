@@ -47,7 +47,6 @@ import org.eclipse.jdt.ls.core.internal.JavaClientConnection;
 import org.eclipse.jdt.ls.core.internal.JavaClientConnection.JavaLanguageClient;
 import org.eclipse.jdt.ls.core.internal.JavaLanguageServerPlugin;
 import org.eclipse.jdt.ls.core.internal.JobHelpers;
-import org.eclipse.jdt.ls.core.internal.LanguageServerApplication;
 import org.eclipse.jdt.ls.core.internal.LanguageServerWorkingCopyOwner;
 import org.eclipse.jdt.ls.core.internal.ServiceStatus;
 import org.eclipse.jdt.ls.core.internal.codemanipulation.GenerateGetterSetterOperation.AccessorField;
@@ -463,16 +462,31 @@ public class JDTLanguageServer extends BaseJDTLanguageServer implements Language
 	/* (non-Javadoc)
 	 * @see org.eclipse.lsp4j.services.LanguageServer#exit()
 	 */
+	/*	@Override
+		public void exit() {
+			logInfo(">> exit");
+			LanguageServerApplication application = JavaLanguageServerPlugin.getLanguageServer();
+			if (application != null && application.getParentProcessId() != ProcessHandle.current().pid()) {
+				Executors.newSingleThreadScheduledExecutor().schedule(() -> {
+					logInfo("Forcing exit after 1 min.");
+					System.exit(FORCED_EXIT_CODE);
+				}, 1, TimeUnit.MINUTES);
+			}
+			if (!shutdownReceived) {
+				shutdownJob.setSystem(true);
+				shutdownJob.schedule();
+			}
+			try {
+				shutdownJob.join();
+			} catch (InterruptedException e) {
+				JavaLanguageServerPlugin.logException(e.getMessage(), e);
+			}
+			JavaLanguageServerPlugin.getLanguageServer().exit();
+		}*/
+
 	@Override
 	public void exit() {
 		logInfo(">> exit");
-		LanguageServerApplication application = JavaLanguageServerPlugin.getLanguageServer();
-		if (application != null && application.getParentProcessId() != ProcessHandle.current().pid()) {
-			Executors.newSingleThreadScheduledExecutor().schedule(() -> {
-				logInfo("Forcing exit after 1 min.");
-				System.exit(FORCED_EXIT_CODE);
-			}, 1, TimeUnit.MINUTES);
-		}
 		if (!shutdownReceived) {
 			shutdownJob.setSystem(true);
 			shutdownJob.schedule();
@@ -482,7 +496,6 @@ public class JDTLanguageServer extends BaseJDTLanguageServer implements Language
 		} catch (InterruptedException e) {
 			JavaLanguageServerPlugin.logException(e.getMessage(), e);
 		}
-		JavaLanguageServerPlugin.getLanguageServer().exit();
 	}
 
 	/* (non-Javadoc)

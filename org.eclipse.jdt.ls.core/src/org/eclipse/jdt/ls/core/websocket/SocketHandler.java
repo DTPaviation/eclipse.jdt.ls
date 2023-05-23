@@ -113,6 +113,7 @@ public class SocketHandler {
 
 			LanguageMessageHandler languageMsgHandler = ((LanguageMessageHandler) handler);
 			languageMsgHandler.getProtocol().disconnectClient();
+			languageMsgHandler.getProtocol().exit();
 		}
 		session.close();
 		closureLatch.countDown();
