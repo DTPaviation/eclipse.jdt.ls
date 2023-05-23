@@ -20,6 +20,8 @@ spec:
         volumeMounts:
         - name: jdtls-volume
           mountPath: /etc/jdtls/project
+		- name: jdtls-workspace
+            mountPath: /etc/jdtls/workspace  		  
         ports:
         - containerPort: 5036
           protocol: TCP
@@ -29,4 +31,8 @@ spec:
           nfs:
             server: kubernetesMaster
             path: /nfsdata/tnexus-mongodb/contexts/msgHubClasses
+        - name: jdtls-workspace
+          nfs:
+            server: kubernetesMaster
+            path: /nfsdata/tnexus-mongodb/contexts/jdtlsWorkspace				
 
