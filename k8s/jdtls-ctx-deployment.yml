@@ -15,17 +15,16 @@ spec:
         app: jdtls-context
     spec:
       containers:
-      - image: tnexus/jdtls-context
-        name: jdtls-context
-        volumeMounts:
-        - name: jdtls-volume
-          mountPath: /etc/jdtls/project
-		- name: jdtls-workspace
-          mountPath: /etc/jdtls/workspace  		  
-        ports:
-        - containerPort: 5036
-          protocol: TCP
-    
+        - image: tnexus/jdtls-context
+          name: jdtls-context
+          volumeMounts:
+            - name: jdtls-volume
+              mountPath: /etc/jdtls/project
+            - name: jdtls-workspace
+              mountPath: /etc/jdtls/workspace
+          ports:
+            - containerPort: 5036
+              protocol: TCP
       volumes:
         - name: jdtls-volume
           nfs:
@@ -34,5 +33,4 @@ spec:
         - name: jdtls-workspace
           nfs:
             server: kubernetesMaster
-            path: /nfsdata/tnexus-mongodb/contexts/jdtlsWorkspace				
-
+            path: /nfsdata/tnexus-mongodb/contexts/jdtlsWorkspace
