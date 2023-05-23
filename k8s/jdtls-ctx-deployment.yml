@@ -21,7 +21,7 @@ spec:
         - name: jdtls-volume
           mountPath: /etc/jdtls/project
 		- name: jdtls-workspace
-            mountPath: /etc/jdtls/workspace  		  
+          mountPath: /etc/jdtls/workspace  		  
         ports:
         - containerPort: 5036
           protocol: TCP
